@@ -1,0 +1,43 @@
+# RescueLink Session Checkpoints Log
+**Policy:** NEVER DELETE PREVIOUS ENTRIES. Always append or prepend new checkpoints to maintain session history.
+
+---
+
+# RescueLink Session Checkpoint: V1.7.1 Stable Release
+**Timestamp:** 2026-03-23
+**Last Action:** Deployed V1.7.1 Release APK to desktop and physical hardware (Redmi Note 9S).
+
+### Jobs Done (Final Session Summary):
+- **[Critical] Fix: Internet Permissions:** Added `INTERNET` and `ACCESS_NETWORK_STATE` to `AndroidManifest.xml`, resolving the "Black Map" issue when the phone is online.
+- **[Fix] Runtime Crash:** Resolved `Null check operator used on a null value` in `AutoConnectScreen` by adding `mounted` checks and safe `Provider` access.
+- **[Fix] Translation Correction:** Successfully replaced "Gateway aranıyor" with "GPS ARANIYOR..." in Onboarding and Profile screens.
+- **[Fix] Service Integrity:** Restored `getForceSosLang` and `setForceSosLang` methods in `StorageService` that were lost during earlier refactoring.
+- **[Feature] Map Resilience:** Updated `MapService` and `LocationPickerScreen` to seamlessly use OpenStreetMap (Online) if no local MBTiles file is present in `assets/map/`.
+- **[Deployment] Release Build:** Generated `RescueLink_V1.7.1.apk` (23MB optimized) and verified stability on the connected device.
+
+### Current Context:
+- **Build Status:** V1.7.1 is the active stable version.
+- **Map Behavior:** Online maps are fully functional. Offline maps require a `.mbtiles` file to be placed in `assets/map/`.
+- **UX:** All core survival features (Battery Mode, Whistle, BLE Retry) are verified and working with correct translations.
+
+### Resumption Hint:
+"Welcome back. V1.7.1 is stable and deployed. Maps are working online, and the 'Null Check' crash is fixed. Should we move to Phase 8 or focus on bundling a local city map for total offline use?"
+
+---
+
+# RescueLink Session Checkpoint: V1.7.0 Ready
+**Timestamp:** 2026-03-22
+**Last Action:** Release APK `RescueLink_V1.7.0.apk` created and moved to Desktop.
+
+### Current Context:
+- **Codebase Status:** Cleaned. Legacy files (`lib/sos_screen.dart`, `lib/ble_scan_screen.dart`, `lib/globals.dart`) deleted as they were redundant to the new Service-based architecture.
+- **Version:** V1.7.0 STABLE.
+- **Documentation:** `STATE.md` and `ROADMAP.md` updated to reflect Phase 7 (Survival Optimizations).
+
+### Technical Handover:
+- Core services (`BleService`, `GpsService`, `WhistleService`) are fully operational with survival logic (Battery throttling, dynamic GPS, auto-retry).
+- The app is ready for physical hardware testing in mesh environments.
+- **Pending:** No active code tasks. Awaiting user feedback from field tests or instructions for Phase 8.
+
+### Resumption Hint:
+"Welcome back. We just finalized the V1.7.0 release and cleaned the legacy code. The production APK is on your desktop. Are we starting field test analysis or looking into new features?"
