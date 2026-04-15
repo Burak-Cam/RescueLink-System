@@ -41,13 +41,19 @@
 - [x] Implement comprehensive error handling for BLE/Mesh failures.
 - [x] Conduct E2E testing with simulated mesh nodes.
 
-## Phase 7: Survival & Resilience Optimizations (V1.7.0)
-- **Goal:** Maximize battery life and transmission reliability.
+## Phase 7: Survival & Resilience Optimizations (V1.7.3)
+- **Goal:** Maximize battery life and hardware-software synchronization.
 - **Tasks:**
-  - [x] Implement **Dynamic GPS Sleep-Wake** logic via accelerometer.
-  - [x] Develop **Critical Battery Survival Mode** (<= 15%) with AMOLED black theme.
-  - [x] Implement **Siren Volume Throttling** for battery conservation.
-  - [x] Enhance **BLE Retry Queue** for automated background recovery.
-  - [x] Apply **Strict Anti-Spam** payload validation to prevent mesh congestion.
+  - [x] Implement **Watchdog (0x0E Heartbeat)**: Monitor hardware health every 60s.
+  - [x] Develop **%15 Battery 'Koma' Mode**: Disable accelerometer movement detection to save power.
+  - [x] Implement **Emergency GPS Wake**: Force high-accuracy 10s fix only on SOS or Earthquake.
+  - [x] Fix **GPS Status Persistence**: Maintain 'Fixed' status indicator during sleep cycles.
+  - [x] Production UI Cleanup: Remove all debug/developer labels.
 
-**V1.7.0 STABLE - Ready for Field Testing**
+## Phase 8: Field Intelligence & Network (Upcoming)
+- [ ] **Smart BLE Packet Priority**: Prioritize emergency packets in the transmission queue.
+- [ ] **Micro-Map Auto-Download**: Background download of a 2km radius map for the user's registered home.
+- [ ] **Field Data Analysis**: Analyze signal penetration from simulated rubble environments.
+- [ ] **Mesh Delivery Feedback**: Implement visual confirmation when a message hops through multiple nodes.
+
+**V1.7.3 OPTIMIZED - Production Ready**

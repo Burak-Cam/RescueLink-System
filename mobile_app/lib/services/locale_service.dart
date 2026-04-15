@@ -98,7 +98,14 @@ class LocaleService extends ChangeNotifier {
       'step_node': 'CİHAZ',
       'step_hq': 'MERKEZ',
       'country': 'Ülke',
-      'select_country': 'Lütfen bir ülke seçin'
+      'select_country': 'Lütfen bir ülke seçin',
+      'anomaly_title': 'Sarsıntı Algılandı',
+      'anomaly_desc': 'Bir sarsıntı oldu, bu bir deprem miydi?',
+      'power_lost_msg': '⚠️ Donanım şebeke gücünü kaybetti, batarya moduna geçildi.',
+      'tapping_msg': '🎯 Ritmik vuruşunuz algılandı! AFAD ağına iletiliyor...',
+      'loc_acquired': 'Konum başarıyla alındı.',
+      'yes': 'Evet',
+      'no': 'Hayır'
     },
     'EN': {
       'app_name': 'RescueLink',
@@ -169,7 +176,14 @@ class LocaleService extends ChangeNotifier {
       'step_node': 'DEVICE',
       'step_hq': 'HQ',
       'country': 'Country',
-      'select_country': 'Please select a country'
+      'select_country': 'Please select a country',
+      'anomaly_title': 'Vibration Detected',
+      'anomaly_desc': 'A vibration occurred, was this an earthquake?',
+      'power_lost_msg': '⚠️ Hardware lost grid power, switched to battery mode.',
+      'tapping_msg': '🎯 Rhythmic tapping detected! Forwarding to AFAD network...',
+      'loc_acquired': 'Location acquired successfully.',
+      'yes': 'Yes',
+      'no': 'No'
     }
   };
 }

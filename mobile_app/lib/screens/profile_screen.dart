@@ -156,7 +156,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _isDirty = true;
                   });
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text("Konum başarıyla alındı.")),
+                    SnackBar(content: Text(locale.t('loc_acquired'))),
                   );
                 } else {
                   gps.refresh();

@@ -1,51 +1,44 @@
 # Project State: RescueLink
 
 ## Current Status
-- **Phase:** V1.7.0 ADVANCED SURVIVAL STABLE
-- **Progress:** Core functionality complete. Major architectural upgrades for battery life, resilience, and anti-spam have been finalized and tested on physical hardware (Redmi Note 9S & RPi4/ESP32 Gateway).
-- **Active Task:** Codebase is stable. Ready for field testing in simulated rubble environments.
+- **Phase:** V1.7.3 OPTIMIZED SURVIVAL
+- **Progress:** Core functionality and advanced hardware-software watchdog are complete. The app is now fully synchronized with the final ESP32 Edge AI hardware contract.
+- **Active Task:** Ready for long-term battery stress testing and Phase 8 (Field Data Analysis).
 
-## Recent Architectural Upgrades (V1.0.0 -> V1.7.0)
+## Recent Milestones
+- **V1.7.3 (Optimized Survival - Today):**
+  - **Watchdog (0x0E Heartbeat):** Implemented a 180s (3-minute) hardware health monitor. If the ESP32 stops fırlat-ing 0x0E bytes, the app triggers a critical "Donanım Erişilemez" warning.
+  - **%15 Battery 'Koma' Mode:** Upgraded the survival logic. Below 15%, the accelerometer movement listener is completely killed to save every miliampere.
+  - **Emergency GPS Wake:** GPS now stays in deep sleep during 'Koma' mode and *only* wakes for a 10s high-accuracy fix when a manual SOS is pressed or a 0x0A (Earthquake) signal is received.
+  - **GPS Fix Persistence:** Resolved the bug where the GPS status would reset to 'Searching' during sleep cycles. The app now holds the 'Fixed' status (Yellow icon) as long as coordinates exist.
+  - **UI/UX Cleanup:** Removed all debug labels ("Conn:", "Window:") for production quality. Added `loc_acquired` translation for localized feedback.
+  - **V1.7.3 Build:** Compiled and installed the final optimized ARM64 release APK on the Redmi Note 9S.
 
-### 1. Dynamic GPS Polling (Battery Optimization)
-- **Problem:** Continuous GPS polling (`LocationAccuracy.high`) rapidly drains the battery, which is fatal in disaster scenarios.
-- **Solution:** Implemented a dynamic sleep/wake architecture in `GpsService` using `sensors_plus`.
-  - The GPS stream is put to **sleep by default** (saving massive battery).
-  - An ultra-low-power accelerometer stream listens for physical movement. If a shake or walk is detected (threshold > 1.5 m/s²), it wakes the GPS for 30 seconds.
-  - A periodic timer wakes the GPS for 10 seconds every 30 minutes for a baseline check.
-  - **Accuracy Safety:** The app strictly compares the `accuracy` value of new GPS pings against the last known saved location. It will *only* overwrite the location if the new ping is statistically more precise, preventing bad signal bounces under rubble from ruining the payload.
-  - **UI Reflection:** The GPS icon dynamically turns Yellow (Searching/Asleep) when saving battery and Green (Fixed) when actively tracking.
+- **V1.7.2 (Gold Standard Integration):**
+  - **AI Hardware Handshake:** SOS button remains locked by default, unlocking only on Earthquake (0x0A) or confirmed Anomaly (0x0B).
+  - **Hardware Awareness:** Integrated alerts for grid-loss (0x0C) and rhythmic tapping (0x0D).
+  - **Unthrottled Survival Whistle:** Forced 100% volume output regardless of battery.
 
-### 2. Unstoppable Siren (Audio Engine Wake-Lock)
-- **Problem:** When the user turns off the screen or puts the phone in their pocket, the OS suspends the app, killing the emergency whistle loop.
-- **Solution:** Integrated `wakelock_plus` into the `WhistleService`.
-  - When the siren is activated, it acquires a deep CPU wake-lock, forcing the phone to stay awake indefinitely.
-  - The app now perfectly loops the local `whistle.mp3` at a forced volume (100% or 80% based on battery), uninterrupted by screen locks.
+## Recent Architectural Upgrades
 
-### 3. Automated BLE Retry Queue
-- **Problem:** In disaster chaos, BLE connections drop frequently.
-- **Solution:** Restructured the `writeBinary` method in `BleService`.
-  - If a write fails or the connection drops mid-send, a silent background `while` loop aggressively attempts to reconnect to the `_lastConnectedDevice` and rewrite the payload every 3 seconds.
-  - The UI gracefully holds the "Telefon -> Cihaz" (Sending...) state until the queue successfully flushes.
+### 1. Watchdog Heartbeat (V1.7.3)
+- **Mechanism:** ESP32 sends 0x0E every 60s. App listens in `BleService`.
+- **Safety:** Prevents a "False Sense of Security" where the user thinks they are protected but the hardware is actually dead/disconnected.
 
-### 4. Strict Anti-Spam Architecture
-- **Problem:** Users could bypass the 15-minute absolute block by exploiting a +1 / -1 hack in the UI or spamming the button.
-- **Solution:** 
-  - Implemented a strict payload comparison (`hasPayloadChanged`).
-  - The app now stores the exact parameters (Health Status, Person Count) of the last *successfully sent* SOS.
-  - Any attempt to send a new SOS is rejected if the parameters match the database, preventing LoRa mesh congestion.
+### 2. 'Koma' Mode GPS (V1.7.3)
+- **Logic:** Below 15%, the phone stops "listening" for movement. 
+- **Impact:** Massive battery savings in high-vibration environments (e.g., aftershocks or rubble clearing) where the accelerometer would otherwise keep waking the GPS.
 
-### 5. Critical Battery "Survival Mode"
-- **Threshold:** Activates automatically at **<= 15% Battery**.
-- **Display:** Switched to **Pure AMOLED Black UI** (#000000) to physically turn off screen pixels.
-- **Throttling:** Disables all periodic GPS wake-ups and limits the emergency siren volume to 80% to reduce peak wattage drain.
+### 3. Dynamic GPS Polling (Battery Optimization)
+- **Mechanism:** Uses `sensors_plus` to wake GPS only on movement (>1.5 m/s²).
+- **Accuracy:** Only overwrites coordinates if the new ping's accuracy (meters) is better than the existing one.
 
 ## Hardware Environment
-- **Client App:** Flutter (Android/iOS) tested on Redmi Note 9S.
-- **Edge Node:** ESP32 with LoRa module (Breadboard).
-- **Gateway:** Raspberry Pi 4 with LoRa HAT.
+- **Client App:** Flutter (Android/iOS) - V1.7.3 Build.
+- **Edge Node:** ESP32 (0x0A-0x0E Contract).
+- **Gateway:** Raspberry Pi 4 LoRa.
 
-## Next Steps / Roadmap
-1. Conduct deep-rubble field tests to verify LoRa packet delivery rates with the new compressed battery-saving GPS logic.
-2. Monitor battery degradation over a 24-hour simulated survival test with periodic siren bursts.
-3. Clean up legacy files and add unit tests for core services.
+## Future Plans (Backlog)
+1. **Smart BLE Packet Priority:** Prioritize SOS packets in the `BleService` queue over telemetry.
+2. **Micro-Map Package:** Automatically download a 2km radius high-detail map around the user's home coordinate during registration.
+3. **Phase 8:** Analysis of field test data from simulated rubble environments.

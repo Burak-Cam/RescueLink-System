@@ -18,14 +18,13 @@ class WhistleService extends ChangeNotifier {
       android: const AudioContextAndroid(
         isSpeakerphoneOn: true,
         stayAwake: true,
-        contentType: AndroidContentType.sonification,
-        usageType: AndroidUsageType.alarm,
+        contentType: AndroidContentType.music, // Media kanalına çekildi
+        usageType: AndroidUsageType.media,     // Daha kolay kontrol için
         audioFocus: AndroidAudioFocus.gainTransient,
       ),
       iOS: AudioContextIOS(
-        category: AVAudioSessionCategory.playAndRecord,
+        category: AVAudioSessionCategory.playback, 
         options: const {
-          AVAudioSessionOptions.defaultToSpeaker,
           AVAudioSessionOptions.duckOthers,
         },
       ),
@@ -36,30 +35,26 @@ class WhistleService extends ChangeNotifier {
     if (_isPlaying) {
       _stopWhistle();
     } else {
-      await _startWhistleBurst(isCriticalBattery);
+      await _startWhistleBurst();
     }
   }
 
-  Future<void> _startWhistleBurst(bool isCriticalBattery) async {
+  Future<void> _startWhistleBurst() async {
     _isPlaying = true;
     notifyListeners();
 
-    // Rule: Unstoppable Siren (CPU Wake-Lock)
     WakelockPlus.enable();
 
-    // Rule: Save original volume
     try {
+      // Rule: System-wide volume boost
       _originalVolume = await VolumeController().getVolume();
-      // Rule: Limit max volume to 80% if in Critical Battery Mode to save speaker power
-      double targetVolume = isCriticalBattery ? 0.8 : 1.0;
-      VolumeController().setVolume(targetVolume);
-      await _player.setVolume(targetVolume);
+      VolumeController().setVolume(1.0); // %100 Medya Sesi
+      await _player.setVolume(1.0);      // %100 Player Sesi
     } catch (e) {
       if (kDebugMode) print("Volume Control Error: $e");
     }
     
     try {
-      // Rule: Play local whistle.mp3 ONLY, loops infinitely
       await _player.play(AssetSource('whistle.mp3'), mode: PlayerMode.lowLatency);
     } catch (e) {
       if (kDebugMode) print("Asset Playback Failed: $e");
@@ -69,8 +64,6 @@ class WhistleService extends ChangeNotifier {
   Future<void> _stopWhistle() async {
     try {
       await _player.stop();
-      
-      // Rule: Restore original volume
       VolumeController().setVolume(_originalVolume);
     } catch (e) {
       // Ignore stop errors

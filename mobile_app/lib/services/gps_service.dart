@@ -24,8 +24,9 @@ class GpsService extends ChangeNotifier {
   Position? get currentPosition => _currentPosition;
   GpsStatus get status => _status;
   bool get isManual => _isManual;
+  bool get isTrackingActive => _isTrackingActive;
 
-  bool get hasFix => _currentPosition != null && (_status == GpsStatus.fixed || _isManual);
+  bool get hasFix => _currentPosition != null;
 
   GpsService() {
     _init();
@@ -92,25 +93,32 @@ class GpsService extends ChangeNotifier {
   void setCriticalBatteryMode(bool isCritical) {
     if (_isCriticalBattery != isCritical) {
       _isCriticalBattery = isCritical;
-      if (kDebugMode) print("GPS: Critical Battery Mode set to $_isCriticalBattery");
+      if (kDebugMode) print("GPS: Critical Battery Mode (COMA) set to $_isCriticalBattery");
       
       if (_isCriticalBattery) {
-        // Cancel the periodic 30-min wake to save power
+        // Rule: In Coma Mode (<15%), stop ALL background monitoring
         _periodicWakeTimer?.cancel();
         _periodicWakeTimer = null;
+        _accelSubscription?.cancel();
+        _accelSubscription = null;
+        _stopTracking();
       } else {
-        // Restore the periodic wake
-        _setupPeriodicWake();
+        // Restore dynamic polling when battery is healthy
+        _setupDynamicPolling();
       }
+      notifyListeners();
     }
   }
 
   void _setupDynamicPolling() {
     _setupPeriodicWake();
+    _accelSubscription?.cancel();
 
     // Rule: Listen to physical movement via accelerometer
     _accelSubscription = userAccelerometerEventStream().listen((event) {
-      // Lowered threshold for significant movement to be more sensitive (1.5 m/s^2)
+      if (_isCriticalBattery) return; // Defensive check
+
+      // Lowered threshold for significant movement (1.5 m/s^2)
       if (event.x.abs() > 1.5 || event.y.abs() > 1.5 || event.z.abs() > 1.5) {
         if (!_isTrackingActive) {
            if (kDebugMode) print("GPS: Accelerometer movement detected! Waking GPS.");
@@ -133,6 +141,11 @@ class GpsService extends ChangeNotifier {
         _wakeGpsFor(const Duration(seconds: 10));
       });
     }
+  }
+
+  void forceEmergencyWake() {
+    if (kDebugMode) print("GPS: Emergency/Manual wake triggered for 10s.");
+    _wakeGpsFor(const Duration(seconds: 10));
   }
 
   void _wakeGpsFor(Duration duration) {
@@ -175,12 +188,7 @@ class GpsService extends ChangeNotifier {
   void _stopTracking() {
     _positionSubscription?.cancel();
     _isTrackingActive = false;
-    
-    // Rule: Visual feedback that GPS is asleep to save battery
-    if (_status == GpsStatus.fixed) {
-      _status = GpsStatus.searching;
-      notifyListeners();
-    }
+    notifyListeners();
   }
 
   Future<void> openSettings() async {
