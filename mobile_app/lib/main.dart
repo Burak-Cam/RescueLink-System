@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:battery_plus/battery_plus.dart';
 import 'services/ble_service.dart';
 import 'services/storage_service.dart';
 import 'services/gps_service.dart';
@@ -10,43 +9,12 @@ import 'services/locale_service.dart';
 import 'services/whistle_service.dart';
 import 'services/sms_queue_service.dart';
 import 'services/map_service.dart';
+import 'services/battery_service.dart';
 import 'services/foreground_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auto_connect_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/home_screen.dart';
-
-// Rule: New Battery State Service for Critical Survival Mode
-class BatteryStateService extends ChangeNotifier {
-  final Battery _battery = Battery();
-  bool _isCritical = false;
-  int _batteryLevel = 100;
-
-  bool get isCritical => _isCritical;
-  int get batteryLevel => _batteryLevel;
-
-  BatteryStateService() {
-    _init();
-  }
-
-  Future<void> _init() async {
-    _batteryLevel = await _battery.batteryLevel;
-    _checkCritical();
-
-    _battery.onBatteryStateChanged.listen((state) async {
-      _batteryLevel = await _battery.batteryLevel;
-      _checkCritical();
-    });
-  }
-
-  void _checkCritical() {
-    bool newCriticalState = _batteryLevel <= 15;
-    if (_isCritical != newCriticalState) {
-      _isCritical = newCriticalState;
-      notifyListeners();
-    }
-  }
-}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

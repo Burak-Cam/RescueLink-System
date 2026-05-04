@@ -2,8 +2,7 @@
 #include <math.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME680.h>
-#include <RescueLink_Disaster_Ai_2.0_inferencing.h> 
-//#include <RescueLink_Diaster_AI_3.0_inferencing.h>
+#include <RescueLink_Disaster_Ai_2.0_inferencing.h>
 
 #include "edge-impulse-sdk/tensorflow/lite/micro/all_ops_resolver.h"
 #include "edge-impulse-sdk/tensorflow/lite/micro/micro_interpreter.h"
@@ -32,10 +31,19 @@ const int frekans    = 2000;
 const int cozunurluk = 8;
 int sesSeviyesi      = 100;
 
-// --- DURUM ---
-int  calisma_modu = 0;
-bool ilk_acilis   = true;
+// --- DURUM & HAFIZA ---
+int   calisma_modu = 0;
+bool  ilk_acilis   = true;
 const int MPU_ADDR = 0x68;
+
+// 🛠️ YENİ: Cihazın kendi hafızasında tuttuğu son koordinatlar
+float son_lat = 0.0;
+float son_lon = 0.0;
+
+// --- KİLİTLER (MUTEX) ---
+SemaphoreHandle_t fire_index_mutex;
+SemaphoreHandle_t i2c_mutex;
+SemaphoreHandle_t lora_mutex;
 
 // --- DEPREM AI ---
 float features[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
@@ -50,21 +58,20 @@ float onceki_magnitude = 9.81;
 
 // --- BME680 ---
 Adafruit_BME680 bme;
-
-// Baseline
 float baseline_gas   = 0, baseline_temp = 0;
 float baseline_hum   = 0, baseline_pres = 0;
 bool  baseline_hazir = false;
 unsigned long yangin_alarm_bitis = 0;
 int   baseline_sayac = 0;
 const int BASELINE_SAMPLE_COUNT = 24;
+bool onceki_koma_modu = false;
 
 // Threshold
 #define GAS_RATIO_FIRE        0.10
 #define GAS_RATIO_AIR_QUALITY 0.30
 #define TEMP_DELTA_FIRE       15.0
 #define HUMIDITY_DELTA_HIGH   25.0
-#define DEPREM_STD_THRESHOLD  0.3   // Sarsıntı tespit eşiği (m/s²)
+#define DEPREM_STD_THRESHOLD  0.3
 
 // --- TFLite Micro (Yangın AI) ---
 #define FIRE_INPUT_SIZE   200
@@ -82,7 +89,6 @@ namespace {
 
 float fire_features[FIRE_INPUT_SIZE];
 int   fire_feature_index = 0;
-SemaphoreHandle_t fire_index_mutex;
 
 const char* fire_labels[4] = {"air_quality_bad", "fire", "humidity", "normal"};
 
@@ -95,11 +101,86 @@ class MyServerCallbacks : public BLEServerCallbacks {
     void onDisconnect(BLEServer* pServer) { deviceConnected = false; }
 };
 
+// --- BLE RX (GELEN VERİ DİNLEME - HAM BİNARY OKUMA) ---
+class MyRxCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+        // String belasını tamamen bıraktık, doğrudan donanıma gelen ham byte'ları alıyoruz!
+        uint8_t* rxData = pCharacteristic->getData();
+        size_t rxLength = pCharacteristic->getLength();
+
+        if (rxLength > 0) {
+            // 1. Ham Binary GPS Paketi mi? (Uzunluk 12 ve Header 0x01 ise)
+            if (rxLength == 12 && rxData[0] == 0x01) {
+                memcpy(&son_lat, rxData + 2, 4);
+                memcpy(&son_lon, rxData + 6, 4);
+                Serial.printf("📍 [GPS BİNARY] Konum güncellendi: Lat=%.4f, Lon=%.4f\n", son_lat, son_lon);
+            } 
+            else {
+                // Eski string "LOC|" formatı gelme ihtimaline karşı (Geriye Dönük Uyum)
+                String rxString = "";
+                for (int i = 0; i < rxLength; i++) rxString += (char)rxData[i];
+
+                if (rxString.startsWith("LOC|")) {
+                    int firstPipe = rxString.indexOf('|');
+                    int secondPipe = rxString.indexOf('|', firstPipe + 1);
+                    if (firstPipe > 0 && secondPipe > 0) {
+                        son_lat = rxString.substring(firstPipe + 1, secondPipe).toFloat();
+                        son_lon = rxString.substring(secondPipe + 1).toFloat();
+                        Serial.printf("📍 [GPS METİN] Konum güncellendi: Lat=%.4f, Lon=%.4f\n", son_lat, son_lon);
+                    }
+                }
+                else {
+                    // Standart 1 Byte Komutlar
+                    uint8_t cmd = rxData[0];
+                    
+                    if (cmd == 0x99) {
+                        yangin_alarm_bitis = 0;
+                        ledcWrite(BUZZER_PIN, 0);
+                        Serial.println("🔇 [SİSTEM] Alarm susturuldu.");
+                    }
+                    else if (cmd == 0x55) {
+                        calisma_modu = 4;
+                        Serial.println("🔋 [KOMA] Koma Modu AÇILDI.");
+                        ledcWrite(BUZZER_PIN, 80); vTaskDelay(100 / portTICK_PERIOD_MS); ledcWrite(BUZZER_PIN, 0);
+                    }
+                    else if (cmd == 0x56) {
+                        calisma_modu = 3;
+                        Serial.println("🟢 [KOMA] Koma Modu KAPATILDI.");
+                        ledcWrite(BUZZER_PIN, 80); vTaskDelay(100 / portTICK_PERIOD_MS);
+                        vTaskDelay(100 / portTICK_PERIOD_MS);
+                        ledcWrite(BUZZER_PIN, 80); vTaskDelay(100 / portTICK_PERIOD_MS); ledcWrite(BUZZER_PIN, 0);
+                    }
+                }
+            }
+        }
+    }
+};
+
 void sendBleCommand(uint8_t command) {
     if (deviceConnected) {
         uint8_t cmd[1] = {command};
         pTxCharacteristic->setValue(cmd, 1);
         pTxCharacteristic->notify();
+    }
+}
+
+// LoRa Üzerinden Hafızalı (Konumlu) Binary Paket Gönderme
+void sendLoRaBinary(uint8_t type) {
+    uint8_t packet[12] = {0}; 
+    packet[0] = 0x01;  // Header
+    packet[1] = type;  // Acil Durum Tipi
+    
+    // Float değerleri (4 Byte) doğrudan byte dizisine yapıştır
+    memcpy(&packet[2], &son_lat, sizeof(float));
+    memcpy(&packet[6], &son_lon, sizeof(float));
+
+    // 🛠️ YAMA 2: Otonom sinyallerde kişi sayısını varsayılan 1 yap (AFAD Önceliği)
+    packet[11] = 1;
+    
+    // Kilit al ve gönder
+    if (xSemaphoreTake(lora_mutex, portMAX_DELAY)) {
+        Serial2.write(packet, 12);
+        xSemaphoreGive(lora_mutex);
     }
 }
 
@@ -124,7 +205,7 @@ void checkButton() {
         else if (calisma_modu == 1) Serial.println("🟢 MOD 1: DEPREM");
         else if (calisma_modu == 2) Serial.println("🔥 MOD 2: YANGIN");
         else if (calisma_modu == 3) Serial.println("🛡️ MOD 3: HİBRİT");
-        else if (calisma_modu == 4) Serial.println("🎯 MOD 4: ENKAZ");
+        else if (calisma_modu == 4) Serial.println("🎯 MOD 4: ENKAZ (Koma)");
         Serial.println("*******************************************\n");
 
         ledcWrite(BUZZER_PIN, 80); vTaskDelay(80 / portTICK_PERIOD_MS); ledcWrite(BUZZER_PIN, 0);
@@ -156,12 +237,18 @@ void yanginInference(float temp, float hum, float gas, float pres) {
     float pressure_delta = pres - baseline_pres;
 
     if (!xSemaphoreTake(fire_index_mutex, 0)) return;
+
+    if (fire_feature_index >= FIRE_INPUT_SIZE) {
+        // 🛠️ YAMA 3: Performans için memmove kullanımı (Kayar Pencere)
+        memmove(fire_features, fire_features + 4, (FIRE_INPUT_SIZE - 4) * sizeof(float));
+        fire_feature_index = FIRE_INPUT_SIZE - 4; 
+    }
+
     fire_features[fire_feature_index++] = gas_ratio;
     fire_features[fire_feature_index++] = temp_delta;
     fire_features[fire_feature_index++] = humidity_delta;
     fire_features[fire_feature_index++] = pressure_delta;
     bool tamam = (fire_feature_index >= FIRE_INPUT_SIZE);
-    if (tamam) fire_feature_index = 0;
     xSemaphoreGive(fire_index_mutex);
 
     if (!tamam) return;
@@ -188,7 +275,7 @@ void yanginInference(float temp, float hum, float gas, float pres) {
 
     if ((conf_fire > 0.80) && threshold_fire) {
         ledcWrite(BUZZER_PIN, sesSeviyesi);
-        sendBleCommand(0x0C);
+        sendBleCommand(0x0C); 
         Serial.println("🚨 [YANGIN] YANGIN ALGILANDI!");
         yangin_alarm_bitis = millis() + 30000;
     } else if ((conf_air > 0.70) || threshold_aq_bad) {
@@ -215,15 +302,25 @@ void AiAndSensorTask(void* pvParameters) {
                 Serial.println("Sistem hazır. Butona bas.");
                 ilk_acilis = false;
             }
-            vTaskDelay(25 / portTICK_PERIOD_MS);
+            vTaskDelay(EI_CLASSIFIER_INTERVAL_MS / portTICK_PERIOD_MS);
             continue;
         }
 
-        Wire.beginTransmission(MPU_ADDR); Wire.write(0x3B); Wire.endTransmission(false);
-        Wire.requestFrom(MPU_ADDR, 6, true);
-        int16_t ax_raw = Wire.read() << 8 | Wire.read();
-        int16_t ay_raw = Wire.read() << 8 | Wire.read();
-        int16_t az_raw = Wire.read() << 8 | Wire.read();
+        int16_t ax_raw = 0, ay_raw = 0, az_raw = 0;
+        if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
+            Wire.beginTransmission(MPU_ADDR);
+            Wire.write(0x3B);
+            
+            if (Wire.endTransmission(false) == 0) {
+                if (Wire.requestFrom(MPU_ADDR, 6, true) == 6) {
+                    ax_raw = Wire.read() << 8 | Wire.read();
+                    ay_raw = Wire.read() << 8 | Wire.read();
+                    az_raw = Wire.read() << 8 | Wire.read();
+                }
+            }
+            xSemaphoreGive(i2c_mutex);
+        }
+
         float ax_ms2 = (ax_raw / 16384.0) * 9.81;
         float ay_ms2 = (ay_raw / 16384.0) * 9.81;
         float az_ms2 = (az_raw / 16384.0) * 9.81;
@@ -257,9 +354,6 @@ void AiAndSensorTask(void* pvParameters) {
 
                     bool gercek_sarsinti = (std_dev > DEPREM_STD_THRESHOLD);
 
-                    Serial.printf("🧠 Deprem AI: Deprem=%.0f%% | Anomali=%.0f%%\n",
-                        ai_sonucu*100, anomali_seviyesi);
-
                     unsigned long su_an = millis();
                     if (!deprem_kalkani_aktif) {
                         if (ai_sonucu > 0.70 && gercek_sarsinti) {
@@ -276,8 +370,6 @@ void AiAndSensorTask(void* pvParameters) {
                             Serial.println("⚠️ [ANOMALİ] Tanımlanamayan sarsıntı!");
                         }
                     } else {
-                        int kalan = (deprem_kalkani_bitis - su_an) / 1000;
-                        Serial.printf("⏳ Deprem süreci: %d sn kaldı\n", kalan);
                         if (su_an > deprem_kalkani_bitis) {
                             deprem_kalkani_aktif = false;
                             ledcWrite(BUZZER_PIN, 0);
@@ -287,25 +379,6 @@ void AiAndSensorTask(void* pvParameters) {
                 }
             }
         } else if (calisma_modu == 4) {
-            // --- ESKİ YÖNTEMİ (eşik tabanlı) ---
-            // float sarsinti = abs(magnitude - 9.81);
-            // if (sarsinti > 5.0) {
-            //     unsigned long su_an = millis();
-            //     if (su_an - sonVurusZamani > 150) {
-            //         vurusSayaci++;
-            //         sonVurusZamani = su_an;
-            //         Serial.printf("🎯 Vuruş: %d/4\n", vurusSayaci);
-            //         if (vurusSayaci >= 4) {
-            //             sendBleCommand(0x0D);
-            //             Serial2.println("ENKAZ|RITMIK_VURUS");
-            //             vurusSayaci = 0;
-            //             ledcWrite(BUZZER_PIN, 50); vTaskDelay(150 / portTICK_PERIOD_MS); ledcWrite(BUZZER_PIN, 0);
-            //         }
-            //     }
-            // }
-            // if (millis() - sonVurusZamani > 4000) vurusSayaci = 0;
-
-            // --- YENİ YÖNTEMİ (peak detection) ---
             bool esik_alti  = abs(onceki_magnitude - 9.81) <= 5.0;
             bool esik_ustu  = abs(magnitude - 9.81) > 5.0;
             onceki_magnitude = magnitude;
@@ -318,7 +391,7 @@ void AiAndSensorTask(void* pvParameters) {
                     Serial.printf("🎯 Vuruş: %d/4\n", vurusSayaci);
                     if (vurusSayaci >= 4) {
                         sendBleCommand(0x0D);
-                        Serial2.println("ENKAZ|RITMIK_VURUS");
+                        sendLoRaBinary(0x04);
                         vurusSayaci = 0;
                         ledcWrite(BUZZER_PIN, 50); vTaskDelay(150 / portTICK_PERIOD_MS); ledcWrite(BUZZER_PIN, 0);
                     }
@@ -327,7 +400,7 @@ void AiAndSensorTask(void* pvParameters) {
             if (millis() - sonVurusZamani > 4000) vurusSayaci = 0;
         }
 
-        vTaskDelay(25 / portTICK_PERIOD_MS);
+        vTaskDelay(EI_CLASSIFIER_INTERVAL_MS / portTICK_PERIOD_MS);
     }
 }
 
@@ -353,8 +426,31 @@ void FireSensorTask(void* pvParameters) {
             yangin_alarm_bitis = 0;
         }
 
+        if (calisma_modu == 4) {
+            if (!onceki_koma_modu) {
+                bme.setGasHeater(0, 0);
+                onceki_koma_modu = true;
+                Serial.println("🔋 [KOMA] BME680 Isıtıcısı kapatıldı.");
+            }
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
+            continue; 
+        } else {
+            if (onceki_koma_modu) {
+                bme.setGasHeater(320, 150);
+                onceki_koma_modu = false;
+                Serial.println("🔥 [NORMAL] BME680 Isıtıcısı tekrar aktif.");
+                vTaskDelay(2000 / portTICK_PERIOD_MS); 
+            }
+        }
+
         if (calisma_modu == 2 || calisma_modu == 3) {
-            if (!bme.performReading()) {
+            bool readSuccess = false;
+            if (xSemaphoreTake(i2c_mutex, portMAX_DELAY)) {
+                readSuccess = bme.performReading();
+                xSemaphoreGive(i2c_mutex);
+            }
+
+            if (!readSuccess) {
                 vTaskDelay(1000 / portTICK_PERIOD_MS);
                 continue;
             }
@@ -363,15 +459,16 @@ void FireSensorTask(void* pvParameters) {
             float gas  = bme.gas_resistance / 1000.0;
             float pres = bme.pressure / 100.0;
 
+            if (deviceConnected && baseline_hazir) {
+                char telBuf[64];
+                sprintf(telBuf, "TEL|%.1f|%.0f|%.0f|%.0f", temp, hum, pres, gas);
+                pTxCharacteristic->setValue((uint8_t*)telBuf, strlen(telBuf));
+                pTxCharacteristic->notify();
+            }
+
             if (!baseline_hazir) {
-                Serial.printf("📡 [Kalibrasyon %d/%d] Sıcaklık: %.1f°C | Nem: %.1f%% | Gaz: %.1f kΩ | Basınç: %.1f hPa\n",
-                    baseline_sayac + 1, BASELINE_SAMPLE_COUNT, temp, hum, gas, pres);
                 bmeBaselineGuncelle(temp, hum, gas, pres);
             } else {
-                float gas_ratio  = gas / baseline_gas;
-                float temp_delta = temp - baseline_temp;
-                Serial.printf("🌡️ Sıcaklık: %.1f°C (Δ%+.1f) | Nem: %.1f%% | Gaz: %.1f kΩ (oran: %.2f) | Basınç: %.1f hPa\n",
-                    temp, temp_delta, hum, gas, gas_ratio, pres);
                 yanginInference(temp, hum, gas, pres);
             }
         }
@@ -382,6 +479,9 @@ void FireSensorTask(void* pvParameters) {
 // =========================================================================
 void setup() {
     fire_index_mutex = xSemaphoreCreateMutex();
+    i2c_mutex = xSemaphoreCreateMutex();
+    lora_mutex = xSemaphoreCreateMutex(); 
+
     Serial.begin(115200);
     Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
 
@@ -414,18 +514,35 @@ void setup() {
     BLEServer* pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
     BLEService* pService = pServer->createService(SERVICE_UUID);
+
     pTxCharacteristic = pService->createCharacteristic(
         CHARACTERISTIC_UUID_TX, BLECharacteristic::PROPERTY_NOTIFY);
     pTxCharacteristic->addDescriptor(new BLE2902());
+
+    BLECharacteristic* pRxCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID_RX, BLECharacteristic::PROPERTY_WRITE);
+    pRxCharacteristic->setCallbacks(new MyRxCallbacks());
+
     pService->start();
     pServer->getAdvertising()->start();
 
     xTaskCreatePinnedToCore(AiAndSensorTask, "AiAndSensorTask", 16384, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(FireSensorTask,  "FireSensorTask",  16384, NULL, 1, NULL, 1);
 
-    Serial.println("\n🚀 RESCUELINK V4.1 (EI Deprem + TFLite Yangın + Threshold) YÜKLENDİ!");
+    Serial.println("\n🚀 RESCUELINK V4.6 (Tam Final & Binary Korumalı) YÜKLENDİ!");
 }
 
+// =========================================================================
+// ANA DÖNGÜ (Heartbeat / Yaşam Sinyali)
+// =========================================================================
 void loop() {
+    static unsigned long last_heartbeat = 0;
+
+    if (millis() - last_heartbeat > 3600000) {
+        last_heartbeat = millis();
+        sendBleCommand(0x12);
+        sendLoRaBinary(0x12);
+    }
+
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 }

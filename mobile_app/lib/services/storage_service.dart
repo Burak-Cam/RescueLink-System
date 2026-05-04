@@ -12,7 +12,11 @@ class StorageService {
   static const String _devModeKey = 'dev_mode';
   static const String _profileCompleteKey = 'profile_complete';
   static const String _useStringPayloadKey = 'use_string_payload';
+  static const String _comaModeKey = 'coma_mode';
   static const String _forceSosLangKey = 'force_sos_lang';
+
+  bool? getComaMode() => _prefs.getBool(_comaModeKey);
+  Future<void> setComaMode(bool val) async => await _prefs.setBool(_comaModeKey, val);
   static const String _lastHealthKey = 'last_health';
   static const String _lastCountKey = 'last_count';
 
@@ -55,7 +59,7 @@ class StorageService {
   Future<void> saveSosToHistory(String payload) async {
     final history = getSosHistory();
     history.insert(0, "${DateTime.now().toIso8601String()}|$payload");
-    if (history.length > 50) history.removeLast();
+    if (history.length > 10) history.removeLast();
     await _prefs.setStringList(_sosHistoryKey, history);
   }
 

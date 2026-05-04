@@ -67,6 +67,15 @@ class ForegroundService {
     return result.toString().contains('success');
   }
 
+  static Future<void> showSystemNotification(String title, String text) async {
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.updateService(
+        notificationTitle: title,
+        notificationText: text,
+      );
+    }
+  }
+
   static Future<void> requestIgnoreBatteryOptimizations() async {
     if (defaultTargetPlatform != TargetPlatform.android) return;
     await AppSettings.openAppSettings(type: AppSettingsType.batteryOptimization);

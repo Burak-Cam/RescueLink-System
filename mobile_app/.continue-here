@@ -1,24 +1,24 @@
----
+# RescueLink Session Checkpoint: Phase 9 - Advanced Deployment & Protocol Hardening
+**Timestamp:** 2026-05-04
+**Status:** V4.6 Protocol Synchronized / Production Ready
 
-# RescueLink Session Checkpoint: V1.7.3 Optimized Survival
-**Timestamp:** 2026-04-15
-**Status:** Production Ready / Field-Tested
+### Bugünün Başarıları (Devrimsel Güncellemeler):
+1. **V4.6 Binary Protokol Entegrasyonu (Sıfır Çakışma):**
+   - Edge Node'daki çift çekirdek UART (LoRa) çakışmaları `lora_mutex` ile kalıcı olarak çözüldü.
+   - Otonom (telefonsuz) paket atımları için ESP32 belleğine GPS Cache özelliği eklendi. Otonom paketlerde koordinatlar sıfırlanmıyor ve kişi sayısı her zaman 1 olarak gönderiliyor.
+   - Yangın AI algoritması performansı `memmove` kullanılarak (Sliding Window) optimize edildi.
+2. **Tapping (Ritmik Vuruş) SOS Optimizasyonu:**
+   - Tapping sinyalleri artık gereksiz "Sağlıklı" veya "1 Kişi" metriklerini göndermiyor. 
+   - İhbar, net olarak "RİTMİK VURUŞ ALGILANDI" mesajıyla atılıyor ve AFAD'a 0x04 Binary Code ile iletiliyor.
+   - Sahte ihbarları (False Alarms) engellemek için Tapping SOS, sadece sistem öncesinde bir deprem (0x0A) yaşandıysa tetiklenecek şekilde sıkı bir güvenlik kilidine bağlandı (Geliştirici Modunda serbest bırakıldı).
+3. **Canlı Çevresel Telemetri (UI):**
+   - Yangın ve Gaz ekranlarına BME680 (Sıcaklık, Nem, Basınç, IAQ) verilerini anlık (TEL|) olarak gösteren bir kokpit paneli eklendi.
+4. **Push Notifications (Arka Plan Karargah Sistemi):**
+   - `flutter_foreground_task` kullanılarak; HQ yayınları, ACK SOS onayları, Bağlantı (Heartbeat) kayıpları ve Otonom Yangın/Gaz Dead Man's Switch diyalogları telefonun ana ekranına (uygulama kapalıyken bile) Android Sistem Bildirimi olarak eklendi.
+   - Gereksiz yere pil harcayan ve paniğe yol açan telefondaki siren (`whistle`) Fire/Gas sahnelerinden kaldırıldı; yerine sessiz ve hayati Push Notification getirildi.
+5. **Memory Leak Koruması:**
+   - Mobil uygulamadaki tüm açık StreamSubscription'lar (telemetry, HQ messages, acks) `dispose()` içerisinde kapatılarak donma ve aşırı CPU/Pil tüketimi engellendi.
 
-### Today's Achievements:
-- **[Feature] Watchdog (0x0E Heartbeat):** Added a 180s monitor for hardware health. If the ESP32 doesn't send 0x0E for 3 minutes, the user is alerted that protection is disabled.
-- **[Feature] %15 Battery 'Koma' Mode:** Below 15%, the app disables all movement-based GPS wake-ups. GPS now only wakes for 10s on manual SOS or Earthquake (0x0A).
-- **[Fix] GPS Status Persistence:** Fixed the issue where 'Fixed' status would reset to 'Searching' during battery-saving sleep cycles.
-- **[Cleanup] UI Production Quality:** Removed all developer labels ("Conn: true", etc.) and finalized translations for location acquisition.
-- **[Build] V1.7.3 Release:** Compiled and deployed the optimized release APK to the physical Redmi Note 9S.
-
-### Technical Notes:
-- **`BleService`:** Now manages a `heartbeatTimer` and fırlat-s `BleSystemEvent.heartbeatLost` on timeout.
-- **`GpsService`:** `setCriticalBatteryMode` now aggressively kills the `_accelSubscription` to ensure zero-power drain from sensors during 'Koma' mode.
-- **`HomeScreen`:** Handles heartbeat events with SnackBar notifications and triggers `forceEmergencyWake()` for critical pings.
-
-### Next Session Goals (Phase 8):
-1. **Smart BLE Packet Priority:** Implement a priority queue for SOS over telemetry in `BleService`.
-2. **Micro-Map Auto-Download:** Build the background service to fetch a 2km map tile around the home coordinate.
-3. **Battery Stress Test:** Conduct a 24-hour survival simulation with periodic siren and heartbeat checks.
-
----
+### Sonraki Oturum İçin (Next Steps):
+- **Gateway Entegrasyonu:** RPi4 tarafındaki Gateway kodunun, kök dizine bıraktığımız `RESCUELINK_V4.1_PROTOCOL.md` (Aslında V4.6 kapasiteli) yapısına göre 12 byte'lık binary paketi hatasız ayrıştırıp ayrıştırmadığının saha testi yapılacak.
+- **24 Saatlik Enkaz Testi:** Her iki cihaz da (ESP32 ve Redmi Note 9S) güç bankalarıyla aktif edilerek gerçek bir senaryo testi (End-to-End Simulation) yapılacak. Koma modunda pil dayanımı ölçülecek.

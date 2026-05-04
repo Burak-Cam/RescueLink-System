@@ -67,15 +67,10 @@ class _LocationPickerScreenState extends State<LocationPickerScreen> {
                 },
               ),
               children: [
-                if (mapService.tileProvider != null)
-                  TileLayer(
-                    tileProvider: mapService.tileProvider,
-                  )
-                else
-                  TileLayer(
-                    urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.rescuelink.app',
-                  ),
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.rescuelink.app',
+                ),
               ],
             ),
           ],

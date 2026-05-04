@@ -1,13 +1,13 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:convert';
-import '../main.dart';
+import '../services/battery_service.dart';
 import '../services/ble_service.dart';
 import '../services/storage_service.dart';
 import '../services/gps_service.dart';
@@ -32,14 +32,70 @@ class _HomeScreenState extends State<HomeScreen> {
   int _personCount = 1;
   final List<String> _incomingMessages = [];
   bool _showHistory = false;
+  bool _isComaMode = false;
+  
+  // Active emergency tracking for UI locks
+  bool _isFireActive = false;
+  bool _isGasActive = false;
+  bool _hasEarthquakeOccurred = false;
+  String _activeSosType = ""; 
+
+  // Environmental Data
+  double _temp = 0.0;
+  double _hum = 0.0;
+  double _press = 0.0;
+  double _iaq = 0.0;
+
+  final PageController _pageController = PageController();
+
+  bool _hasPromptedMap = false;
+
+  StreamSubscription? _telemetrySub;
+  StreamSubscription? _messagesSub;
+  StreamSubscription? _ackSub;
+  StreamSubscription? _systemEventSub;
 
   @override
   void initState() {
     super.initState();
+    _loadComaModeState();
     _listenForMessages();
     _listenForAcks();
     _listenForSystemEvents();
+    _listenForTelemetry();
     _checkCityAndPromptMap();
+  }
+
+  void _listenForTelemetry() {
+    final ble = context.read<BleService>();
+    _telemetrySub = ble.telemetryStream.listen((data) {
+      if (mounted) {
+        setState(() {
+          _temp = data['temp'] ?? _temp;
+          _hum = data['hum'] ?? _hum;
+          _press = data['press'] ?? _press;
+          _iaq = data['iaq'] ?? _iaq;
+        });
+      }
+    });
+  }
+
+  Future<void> _loadComaModeState() async {
+    final storage = context.read<StorageService>();
+    final savedMode = storage.getComaMode();
+    if (savedMode != null) {
+      setState(() { _isComaMode = savedMode; });
+    }
+  }
+
+  @override
+  void dispose() {
+    _telemetrySub?.cancel();
+    _messagesSub?.cancel();
+    _ackSub?.cancel();
+    _systemEventSub?.cancel();
+    _pageController.dispose();
+    super.dispose();
   }
 
   Future<void> _checkCityAndPromptMap() async {
@@ -53,29 +109,34 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!hasInternet) return;
 
     if (gps.currentPosition != null) {
-      try {
-        List<Placemark> placemarks = await placemarkFromCoordinates(
-          gps.currentPosition!.latitude, 
-          gps.currentPosition!.longitude
-        );
-        
-        if (placemarks.isNotEmpty) {
-          String city = placemarks.first.administrativeArea ?? placemarks.first.locality ?? "Unknown";
-          if (!map.hasMapForCity(city)) {
-            if (mounted) _showMapPrompt(city, locale);
-          }
-        }
-      } catch (e) { }
+      if (!map.hasMapForCity("LocalCache") && !_hasPromptedMap) {
+        _hasPromptedMap = true;
+        if (mounted) _showMapPrompt(gps.currentPosition!.latitude, gps.currentPosition!.longitude, locale);
+      }
+    } else {
+      gps.addListener(_onGpsUpdate);
     }
   }
 
-  void _showMapPrompt(String city, LocaleService locale) {
+  void _onGpsUpdate() {
+    if (!mounted) return;
+    final gps = context.read<GpsService>();
+    if (gps.currentPosition != null && !_hasPromptedMap) {
+      gps.removeListener(_onGpsUpdate);
+      _checkCityAndPromptMap();
+    }
+  }
+
+  void _showMapPrompt(double lat, double lon, LocaleService locale) {
+    final map = context.read<MapService>();
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF2B2B2B),
-        title: Text(locale.t('map_prompt_title')),
-        content: Text(locale.t('map_prompt_desc', args: {'city': city})),
+        title: Text(locale.isEnglish ? "Download Offline Map" : "Çevrimdışı Harita İndir"),
+        content: Text(locale.isEnglish 
+          ? "Would you like to download a 2km high-detail map radius around your current location for offline emergency use?" 
+          : "Acil durumlarda internetsiz kullanabilmek için bulunduğunuz konumun 2KM etrafındaki detaylı haritayı indirmek ister misiniz?"),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -84,8 +145,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
+              map.downloadLocalMapCache(lat, lon);
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("${city} map download started...")),
+                SnackBar(content: Text(locale.isEnglish ? "Micro-Map download started..." : "Mikro-Harita indirmesi başladı...")),
               );
             },
             child: Text(locale.t('download')),
@@ -133,6 +195,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final gps = context.read<GpsService>();
     final sosStatus = context.read<SosStatusService>();
     final locale = context.read<LocaleService>();
+    final whistle = context.read<WhistleService>();
+    final battery = context.read<BatteryStateService>();
 
     ble.systemEventStream.listen((event) {
       if (!mounted) return;
@@ -157,11 +221,41 @@ class _HomeScreenState extends State<HomeScreen> {
           );
           break;
         case BleSystemEvent.earthquake:
+          _hasEarthquakeOccurred = true;
+          if (_pageController.hasClients) {
+            _pageController.animateToPage(0, duration: const Duration(milliseconds: 500), curve: Curves.easeInOut);
+          }
           gps.forceEmergencyWake();
           sosStatus.triggerAiEmergency();
           break;
         case BleSystemEvent.anomaly:
           _showAnomalyPrompt(locale);
+          break;
+        case BleSystemEvent.fire:
+          setState(() { _isFireActive = true; });
+          if (_pageController.hasClients) {
+            _pageController.animateToPage(1, duration: const Duration(milliseconds: 500), curve: Curves.easeInOut);
+          }
+          _showDeadMansSwitchDialog(locale, "FIRE");
+          break;
+        case BleSystemEvent.badAir:
+          setState(() { _isGasActive = true; });
+          if (_pageController.hasClients) {
+            _pageController.animateToPage(1, duration: const Duration(milliseconds: 500), curve: Curves.easeInOut);
+          }
+          _showDeadMansSwitchDialog(locale, "GAS");
+          break;
+        case BleSystemEvent.highHumidity:
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(locale.isEnglish ? "Info: High humidity / Flood risk detected." : "Bilgi: Yüksek nem / Su baskını riski."),
+              backgroundColor: Colors.blue,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+          break;
+        case BleSystemEvent.uncertain:
+          _showDeadMansSwitchDialog(locale, "UNCERTAIN");
           break;
         case BleSystemEvent.powerLost:
           ScaffoldMessenger.of(context).showSnackBar(
@@ -177,6 +271,13 @@ class _HomeScreenState extends State<HomeScreen> {
               duration: const Duration(seconds: 4),
             ),
           );
+          // Otonom Tapping SOS sadece bir deprem yaşandıysa (veya Dev Mode açıksa test için) tetiklenmeli
+          final storage = context.read<StorageService>();
+          if (_hasEarthquakeOccurred || storage.isDevMode()) {
+            _sendSos(type: "TAPPING");
+          } else {
+            if (kDebugMode) print("Tapping ignored: No earthquake occurred.");
+          }
           break;
       }
     });
@@ -198,13 +299,79 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _sendSos() async {
+  void _showDeadMansSwitchDialog(LocaleService locale, String type) {
+    final ble = context.read<BleService>();
+    final sosStatus = context.read<SosStatusService>();
+    final gps = context.read<GpsService>();
+    final whistle = context.read<WhistleService>();
+    
+    Timer? switchTimer;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF2B2B2B),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Color(0xFFD32F2F), size: 28),
+            const SizedBox(width: 8),
+            Expanded(child: Text(locale.isEnglish ? "ARE YOU CONSCIOUS?" : "BİLİNCİNİZ AÇIK MI?", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16))),
+          ],
+        ),
+        content: Text(locale.isEnglish 
+          ? "Critical environmental danger detected ($type). If you do not respond in 60 seconds, an auto-SOS will be dispatched." 
+          : "Kritik çevresel tehlike algılandı ($type). 60 saniye içinde yanıt vermezseniz otomatik SOS gönderilecektir."),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
+            onPressed: () { 
+              switchTimer?.cancel();
+              whistle.stopWhistle(); 
+              ble.sendSilenceCommand(); 
+              setState(() { 
+                _isFireActive = false; 
+                _isGasActive = false; 
+                _activeSosType = ""; 
+              });
+              Navigator.pop(context); 
+            }, 
+            child: Text(locale.isEnglish ? "SILENCE (I'm Safe)" : "SUSTUR (Güvendeyim)")
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
+            onPressed: () { 
+              switchTimer?.cancel();
+              Navigator.pop(context); 
+              gps.forceEmergencyWake();
+              sosStatus.triggerAiEmergency();
+              _sendSos(type: type); 
+            }, 
+            child: const Text("SEND SOS NOW")
+          ),
+        ],
+      ),
+    );
+
+    switchTimer = Timer(const Duration(seconds: 60), () {
+      if (mounted) {
+        Navigator.pop(context); 
+        gps.forceEmergencyWake();
+        sosStatus.triggerAiEmergency();
+        _sendSos(type: type);
+      }
+    });
+  }
+
+  Future<void> _sendSos({String type = "EARTHQUAKE"}) async {
     final ble = context.read<BleService>();
     final storage = context.read<StorageService>();
     final gps = context.read<GpsService>();
     final sosStatus = context.read<SosStatusService>();
     final locale = context.read<LocaleService>();
     final smsQueue = context.read<SmsQueueService>();
+
+    setState(() { _activeSosType = type; });
 
     // 1. Anti-Spam: Aynı mesajsa sessizce çık (GPS uyarısı gösterme)
     if (!storage.isDevMode() && storage.getLastSosTimestamp() != null) {
@@ -230,13 +397,23 @@ class _HomeScreenState extends State<HomeScreen> {
     final trMap = {'Healthy': 'SAĞLIKLI', 'Lightly Injured': 'HAFİF YARALI', 'Severely Injured': 'AĞIR YARALI'};
     final enMap = {'Healthy': 'HEALTHY', 'Lightly Injured': 'LIGHTLY INJURED', 'Severely Injured': 'SEVERELY INJURED'};
     String healthText = useTr ? (trMap[_healthStatusKey] ?? _healthStatusKey) : (enMap[_healthStatusKey] ?? _healthStatusKey);
+    String tappingText = useTr ? "RİTMİK VURUŞ ALGILANDI" : "RHYTHMIC TAPPING DETECTED";
 
     String coords = "0.0,0.0";
     if (gps.currentPosition != null) {
       coords = "${gps.currentPosition!.latitude.toStringAsFixed(5)},${gps.currentPosition!.longitude.toStringAsFixed(5)}";
     }
 
-    final String historyString = "SOS|${storage.getFirstName()} ${storage.getLastName()}|$coords|$healthText|$_personCount";
+    String historyString;
+    if (type == "EARTHQUAKE") {
+      historyString = "SOS|$type|${storage.getFirstName()} ${storage.getLastName()}|$coords|$healthText|$_personCount";
+    } else if (type == "TAPPING") {
+      historyString = "SOS|$type|${storage.getFirstName()} ${storage.getLastName()}|$coords|$tappingText";
+    } else {
+      String dangerText = useTr ? "$type TEHLİKESİ BİLDİRİLDİ" : "$type DANGER REPORTED";
+      historyString = "SOS|$type|${storage.getFirstName()} ${storage.getLastName()}|$coords|$dangerText";
+    }
+
     smsQueue.queueSos(historyString);
 
     Uint8List payload;
@@ -244,27 +421,47 @@ class _HomeScreenState extends State<HomeScreen> {
       payload = utf8.encode(historyString) as Uint8List;
     } else {
       final bytes = BytesBuilder();
-      bytes.addByte(0x01); 
+      bytes.addByte(0x01); // Header: SOS Packet
+      
+      // Afet Tipi (Disaster Type) için 1 Byte (0=Manual, 1=Earthquake, 2=Fire, 3=Gas, 4=Tapping)
+      int typeValue = 0;
+      if (type == "EARTHQUAKE") typeValue = 1;
+      else if (type == "FIRE") typeValue = 2;
+      else if (type == "GAS") typeValue = 3;
+      else if (type == "TAPPING") typeValue = 4;
+      bytes.addByte(typeValue);
+      
       if (gps.currentPosition != null) {
         final byteData = ByteData(8);
         byteData.setFloat32(0, gps.currentPosition!.latitude);
         byteData.setFloat32(4, gps.currentPosition!.longitude);
         bytes.add(byteData.buffer.asUint8List());
-      } else { bytes.add(Uint8List(8)); }
-      int healthValue = 0;
-      if (_healthStatusKey == "Lightly Injured") healthValue = 1;
-      if (_healthStatusKey == "Severely Injured") healthValue = 2;
-      bytes.addByte(healthValue);
-      bytes.addByte(_personCount);
+      } else { 
+        bytes.add(Uint8List(8)); 
+      }
+      
+      if (type == "EARTHQUAKE") {
+        int healthValue = 0;
+        if (_healthStatusKey == "Lightly Injured") healthValue = 1;
+        if (_healthStatusKey == "Severely Injured") healthValue = 2;
+        bytes.addByte(healthValue);
+        bytes.addByte(_personCount);
+      } else {
+        // FIRE, GAS ve TAPPING durumlarında sağlık ve kişi sayısı 0/0 olarak set edilir
+        bytes.addByte(0); 
+        bytes.addByte(0);
+      }
+      
       payload = bytes.takeBytes();
     }
 
-    final success = await ble.writeBinary(payload);
+    final success = await ble.writeBinary(payload, isHighPriority: true);
     if (mounted) {
       if (success) {
         await storage.saveLastSosPayload(_healthStatusKey, _personCount);
         await storage.saveSosToHistory(historyString);
         await sosStatus.setStatus(SosProcessState.sentToNode);
+        setState(() {}); // <-- UPDATE UI FOR HISTORY
       } else {
         await sosStatus.setStatus(SosProcessState.idle);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(locale.t('send_failure')), backgroundColor: const Color(0xFFD32F2F)));
@@ -322,35 +519,232 @@ class _HomeScreenState extends State<HomeScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildErrorBanners(ble, gps, locale),
+          // Page Indicator
+          Container(
+            color: const Color(0xFF1A1A1A),
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildTabIndicator(0, locale.isEnglish ? "EARTHQUAKE" : "DEPREM", Icons.waves),
+                _buildTabIndicator(1, locale.isEnglish ? "FIRE / GAS" : "YANGIN / GAZ", Icons.local_fire_department),
+              ],
+            ),
+          ),
           Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildProfileCard(storage, gps, locale),
-                  const SizedBox(height: 16),
-                  _buildStatusCard(sosStatus, locale),
-                  const SizedBox(height: 16),
-                  if (sosStatus.state != SosProcessState.idle) _buildTruthfulProgressBar(sosStatus, locale),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(child: _buildSosButton(ble, sosStatus, locale)),
-                      const SizedBox(width: 12),
-                      _buildWhistleButton(whistle, battery, locale),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  _buildHqAndHistoryToggle(locale),
-                  const SizedBox(height: 12),
-                  _showHistory ? _buildSosHistory(storage, locale) : _buildHqChannel(locale),
-                ],
-              ),
+            child: PageView(
+              controller: _pageController,
+              onPageChanged: (index) => setState(() {}),
+              children: [
+                _buildEarthquakeScene(ble, storage, gps, sosStatus, locale, whistle, battery),
+                _buildFireGasScene(ble, storage, gps, sosStatus, locale, whistle, battery),
+              ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildTabIndicator(int pageIndex, String title, IconData icon) {
+    bool isActive = _pageController.hasClients ? (_pageController.page?.round() ?? 0) == pageIndex : pageIndex == 0;
+    Color activeColor = pageIndex == 0 ? const Color(0xFFFFC107) : const Color(0xFFD32F2F);
+    
+    return GestureDetector(
+      onTap: () {
+        if (_pageController.hasClients) {
+          _pageController.animateToPage(pageIndex, duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
+        }
+      },
+      child: Column(
+        children: [
+          Icon(icon, color: isActive ? activeColor : Colors.white38, size: 24),
+          const SizedBox(height: 4),
+          Text(title, style: TextStyle(color: isActive ? activeColor : Colors.white38, fontWeight: FontWeight.bold, fontSize: 12)),
+          const SizedBox(height: 4),
+          Container(height: 3, width: 40, color: isActive ? activeColor : Colors.transparent),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEarthquakeScene(BleService ble, StorageService storage, GpsService gps, SosStatusService sosStatus, LocaleService locale, WhistleService whistle, BatteryStateService battery) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildProfileCard(storage, gps, locale),
+          const SizedBox(height: 12),
+          _buildComaModeToggle(ble, locale),
+          const SizedBox(height: 16),
+          _buildStatusCard(sosStatus, locale),
+          const SizedBox(height: 16),
+          if (sosStatus.state != SosProcessState.idle && (_activeSosType == "EARTHQUAKE" || _activeSosType == "")) _buildTruthfulProgressBar(sosStatus, locale),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(child: _buildSosButton(ble, sosStatus, locale, type: "EARTHQUAKE")),
+              const SizedBox(width: 12),
+              _buildWhistleButton(whistle, battery, locale),
+            ],
+          ),
+          const SizedBox(height: 24),
+          _buildHqAndHistoryToggle(locale),
+          const SizedBox(height: 12),
+          _showHistory ? _buildSosHistory(storage, locale) : _buildHqChannel(locale),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildComaModeToggle(BleService ble, LocaleService locale) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: _isComaMode ? const Color(0xFF2E7D32).withValues(alpha: 0.2) : const Color(0xFF2B2B2B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _isComaMode ? const Color(0xFF2E7D32) : Colors.white10),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.power_settings_new, color: _isComaMode ? const Color(0xFF2E7D32) : Colors.white54, size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(locale.isEnglish ? "DISASTER MODE (POWER SAVING)" : "AFET MODU (GÜÇ TASARRUFU)", style: TextStyle(color: _isComaMode ? const Color(0xFF2E7D32) : Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                if (_isComaMode)
+                  Text(locale.isEnglish ? "Low power. Only listening for taps." : "Düşük güç. Sadece vuruşlar dinleniyor.", style: const TextStyle(color: Colors.white70, fontSize: 10)),
+              ],
+            ),
+          ),
+          Switch(
+            value: _isComaMode,
+            activeColor: const Color(0xFF2E7D32),
+            onChanged: (val) {
+              setState(() { _isComaMode = val; });
+              final storage = context.read<StorageService>();
+              storage.setComaMode(val);
+              if (val) {
+                ble.enableComaMode();
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(locale.isEnglish ? "Coma Mode Enabled" : "Afet Modu Aktif"), backgroundColor: const Color(0xFF2E7D32)));
+              } else {
+                ble.disableComaMode();
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(locale.isEnglish ? "Normal Mode Restored" : "Normal Moda Dönüldü")));
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFireGasScene(BleService ble, StorageService storage, GpsService gps, SosStatusService sosStatus, LocaleService locale, WhistleService whistle, BatteryStateService battery) {
+    bool hasActiveAlert = _isFireActive || _isGasActive;
+    
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: hasActiveAlert ? const Color(0x33D32F2F) : const Color(0xFF2B2B2B), 
+              borderRadius: BorderRadius.circular(16), 
+              border: Border.all(color: hasActiveAlert ? const Color(0xFFD32F2F) : Colors.white10)
+            ),
+            child: Column(
+              children: [
+                Icon(
+                  hasActiveAlert ? Icons.local_fire_department : Icons.security, 
+                  color: hasActiveAlert ? const Color(0xFFD32F2F) : const Color(0xFF2E7D32), 
+                  size: 48
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  hasActiveAlert 
+                    ? (locale.isEnglish ? "FIRE & GAS ALERT" : "YANGIN & GAZ ALARMI")
+                    : (locale.isEnglish ? "ENVIRONMENT SAFE" : "ORTAM GÜVENLİ"), 
+                  style: TextStyle(
+                    fontSize: 20, fontWeight: FontWeight.w900, 
+                    color: hasActiveAlert ? Colors.white : const Color(0xFF2E7D32), 
+                    letterSpacing: 2
+                  )
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  hasActiveAlert
+                    ? (locale.isEnglish ? "Stay low to the ground. Check doors for heat before opening. Evacuate immediately." : "Yere yakın durun. Kapıları açmadan önce sıcaklığını kontrol edin. Derhal tahliye olun.")
+                    : (locale.isEnglish ? "BME680 sensors report normal temperature and air quality." : "Sensörler normal sıcaklık ve hava kalitesi raporluyor."), 
+                  textAlign: TextAlign.center, 
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Environmental Dashboard
+          if (!hasActiveAlert) _buildEnvironmentalDashboard(locale),
+          const SizedBox(height: 16),
+          if (sosStatus.state != SosProcessState.idle && (_activeSosType == "FIRE" || _activeSosType == "GAS" || _activeSosType == "UNCERTAIN")) _buildTruthfulProgressBar(sosStatus, locale),
+          const SizedBox(height: 16),
+          _buildSosButton(ble, sosStatus, locale, type: "FIRE", color: const Color(0xFFD32F2F), label: locale.isEnglish ? "FIRE SOS" : "YANGIN SOS"),
+          const SizedBox(height: 12),
+          _buildSosButton(ble, sosStatus, locale, type: "GAS", color: const Color(0xFFFF9800), label: locale.isEnglish ? "GAS LEAK SOS" : "GAZ KAÇAĞI SOS"),
+          const SizedBox(height: 24),
+          _buildHqAndHistoryToggle(locale),
+          const SizedBox(height: 12),
+          _showHistory ? _buildSosHistory(storage, locale, filterTypes: ["FIRE", "GAS"]) : _buildHqChannel(locale),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEnvironmentalDashboard(LocaleService locale) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.analytics_outlined, color: Colors.white38, size: 16),
+              const SizedBox(width: 8),
+              Text(locale.isEnglish ? "LIVE SENSOR TELEMETRY" : "CANLI SENSÖR VERİLERİ", style: const TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildTelemetryItem(Icons.thermostat, "${_temp.toStringAsFixed(1)}°C", locale.isEnglish ? "TEMP" : "SICAKLIK", _temp > 45 ? Colors.red : Colors.orange),
+              _buildTelemetryItem(Icons.water_drop, "${_hum.toStringAsFixed(0)}%", locale.isEnglish ? "HUM" : "NEM", Colors.blue),
+              _buildTelemetryItem(Icons.compress, "${_press.toStringAsFixed(0)} hPa", locale.isEnglish ? "PRESS" : "BASINÇ", Colors.green),
+              _buildTelemetryItem(Icons.air, _iaq.toStringAsFixed(0), locale.isEnglish ? "IAQ" : "HAVA", _iaq > 150 ? Colors.red : Colors.teal),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTelemetryItem(IconData icon, String value, String label, Color color) {
+    return Column(
+      children: [
+        Icon(icon, color: color.withOpacity(0.7), size: 20),
+        const SizedBox(height: 8),
+        Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 16, fontFamily: 'monospace')),
+        const SizedBox(height: 4),
+        Text(label, style: const TextStyle(color: Colors.white24, fontSize: 8, fontWeight: FontWeight.bold)),
+      ],
     );
   }
 
@@ -428,28 +822,41 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildSosButton(BleService ble, SosStatusService sosStatus, LocaleService locale) {
+  Widget _buildSosButton(BleService ble, SosStatusService sosStatus, LocaleService locale, {String type = "EARTHQUAKE", Color color = AppTheme.primaryRed, String? label}) {
     bool isConnected = ble.status == BleConnectionStatus.connected;
     bool isCooldown = sosStatus.isCooldownActive;
     bool isSending = sosStatus.state == SosProcessState.sending;
-    bool isDisabled = !isConnected || isCooldown || isSending;
+    
+    final storage = context.read<StorageService>();
+    bool isLockedByType = false;
+    
+    if (!storage.isDevMode()) {
+      if (type == "FIRE" && !_isFireActive) isLockedByType = true;
+      if (type == "GAS" && !_isGasActive) isLockedByType = true;
+    }
+
+    bool isDisabled = !isConnected || isCooldown || isSending || isLockedByType;
+    String buttonText = label ?? locale.t('sos_button').toUpperCase();
+    
     return ElevatedButton.icon(
-      icon: Icon(isCooldown ? Icons.lock : Icons.warning_amber_rounded, size: 32),
+      icon: Icon(isLockedByType ? Icons.lock_outline : (isCooldown ? Icons.lock : Icons.warning_amber_rounded), size: 32),
       label: Text(
-        isCooldown 
-          ? (sosStatus.isInsideBlockWindow 
-              ? "${locale.t('locked')} (${(sosStatus.blockRemainingSeconds ~/ 60).toString().padLeft(2, '0')}:${(sosStatus.blockRemainingSeconds % 60).toString().padLeft(2, '0')})"
-              : locale.t('locked').toUpperCase())
-          : locale.t('sos_button').toUpperCase(),
+        isLockedByType 
+          ? locale.t('locked').toUpperCase()
+          : (isCooldown 
+              ? (sosStatus.isInsideBlockWindow 
+                  ? "${locale.t('locked')} (${(sosStatus.blockRemainingSeconds ~/ 60).toString().padLeft(2, '0')}:${(sosStatus.blockRemainingSeconds % 60).toString().padLeft(2, '0')})"
+                  : locale.t('locked').toUpperCase())
+              : buttonText),
         textAlign: TextAlign.center,
         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1),
       ),
       style: ElevatedButton.styleFrom(
-        backgroundColor: (isCooldown || isSending) ? Colors.grey.shade900 : AppTheme.primaryRed,
+        backgroundColor: isDisabled ? Colors.grey.shade900 : color,
         padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 12),
-        elevation: (isCooldown || isSending) ? 0 : 12, minimumSize: const Size(double.infinity, 80),
+        elevation: isDisabled ? 0 : 12, minimumSize: const Size(double.infinity, 80),
       ),
-      onPressed: isDisabled ? null : _sendSos,
+      onPressed: isDisabled ? null : () => _sendSos(type: type),
     );
   }
 
@@ -559,14 +966,90 @@ class _HomeScreenState extends State<HomeScreen> {
     return Expanded(child: InkWell(onTap: onTap, child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: active ? const Color(0xFFFFC107) : Colors.transparent, borderRadius: BorderRadius.circular(8), border: Border.all(color: active ? const Color(0xFFFFC107) : Colors.white24)), child: Text(label, textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 10, color: active ? Colors.black : Colors.white54)))));
   }
 
-  Widget _buildSosHistory(StorageService storage, LocaleService locale) {
-    final history = storage.getSosHistory();
+  Widget _buildSosHistory(StorageService storage, LocaleService locale, {List<String>? filterTypes}) {
+    List<String> history = storage.getSosHistory();
+    
+    // Filter history based on scene
+    List<String> filteredHistory = history.where((item) {
+      final parts = item.split('|');
+      // New format: TIMESTAMP|SOS|TYPE|... (length >= 3)
+      // Legacy format: SOS|TYPE|... (length >= 2)
+      
+      String? entryType;
+      if (parts.length >= 3 && parts[1] == "SOS") {
+        entryType = parts[2];
+      } else if (parts.length >= 2 && parts[0] == "SOS") {
+        entryType = parts[1];
+      }
+
+      if (filterTypes != null && filterTypes.isNotEmpty) {
+        return filterTypes.contains(entryType);
+      } else {
+        // Default to Earthquake & Tapping for the first scene
+        return entryType == "EARTHQUAKE" || entryType == "TAPPING";
+      }
+    }).toList();
+
+    // Limit to 10 items to prevent UI bloat
+    if (filteredHistory.length > 10) filteredHistory = filteredHistory.take(10).toList();
+
     return Container(
       decoration: BoxDecoration(color: const Color(0xFF2B2B2B), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white10)),
-      child: history.isEmpty ? Padding(padding: const EdgeInsets.all(40), child: Center(child: Text(locale.t('no_message'), style: const TextStyle(color: Colors.white24, fontStyle: FontStyle.italic)))) : ListView.builder(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), padding: const EdgeInsets.all(12), itemCount: history.length, itemBuilder: (context, index) {
-        final parts = history[index].split('|'); final time = DateTime.parse(parts[0]);
-        return Container(margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0xFFD32F2F).withOpacity(0.3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("${time.hour}:${time.minute.toString().padLeft(2, '0')} - SOS SENT", style: const TextStyle(color: Color(0xFFD32F2F), fontWeight: FontWeight.w900, fontSize: 11)), const SizedBox(height: 4), Text(parts.sublist(1).join(' | '), style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'monospace'))]));
-      }),
+      child: filteredHistory.isEmpty 
+        ? Padding(padding: const EdgeInsets.all(40), child: Center(child: Text(locale.t('no_message'), style: const TextStyle(color: Colors.white24, fontStyle: FontStyle.italic)))) 
+        : ListView.builder(
+            shrinkWrap: true, 
+            physics: const NeverScrollableScrollPhysics(), 
+            padding: const EdgeInsets.all(12), 
+            itemCount: filteredHistory.length, 
+            itemBuilder: (context, index) {
+              final parts = filteredHistory[index].split('|'); 
+              
+              DateTime? time;
+              String? type;
+              String details = "";
+
+              if (parts.length >= 3 && parts[1] == "SOS") {
+                // New Format: TIMESTAMP|SOS|TYPE|NAME|COORDS|HEALTH|COUNT
+                time = DateTime.tryParse(parts[0]);
+                type = parts[2];
+                details = parts.sublist(3).join(' | ');
+              } else if (parts.length >= 2 && parts[0] == "SOS") {
+                // Legacy Format: SOS|TYPE|NAME|COORDS|HEALTH|COUNT
+                type = parts[1];
+                details = parts.sublist(2).join(' | ');
+              }
+
+              time ??= DateTime.now();
+              type ??= "SOS";
+              
+              Color typeColor = (type == "FIRE" || type == "GAS") ? const Color(0xFFD32F2F) : const Color(0xFFFFC107);
+              
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8), 
+                padding: const EdgeInsets.all(12), 
+                decoration: BoxDecoration(
+                  color: Colors.black, 
+                  borderRadius: BorderRadius.circular(8), 
+                  border: Border.all(color: typeColor.withOpacity(0.3))
+                ), 
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, 
+                  children: [
+                    Text(
+                      "${time.hour}:${time.minute.toString().padLeft(2, '0')} - $type SENT", 
+                      style: TextStyle(color: typeColor, fontWeight: FontWeight.w900, fontSize: 11)
+                    ), 
+                    const SizedBox(height: 4), 
+                    Text(
+                      details, 
+                      style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'monospace')
+                    )
+                  ]
+                )
+              );
+            }
+          ),
     );
   }
 

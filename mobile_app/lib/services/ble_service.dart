@@ -15,10 +15,22 @@ enum BleConnectionStatus {
 enum BleSystemEvent {
   earthquake,
   anomaly,
+  fire,
   powerLost,
   rhythmicTapping,
+  badAir,
+  highHumidity,
+  uncertain,
   heartbeatLost,
   heartbeatRestored,
+}
+
+class _BleTask {
+  final Uint8List data;
+  final bool isHighPriority;
+  final Completer<bool> completer;
+
+  _BleTask({required this.data, required this.isHighPriority, required this.completer});
 }
 
 class BleService extends ChangeNotifier {
@@ -39,9 +51,14 @@ class BleService extends ChangeNotifier {
   bool _isHeartbeatAlive = true;
   Timer? _heartbeatTimer;
 
+  // Priority Queue Logic
+  final List<_BleTask> _taskQueue = [];
+  bool _isProcessingQueue = false;
+
   final StreamController<String> _incomingMessagesController = StreamController<String>.broadcast();
   final StreamController<dynamic> _ackController = StreamController<dynamic>.broadcast();
   final StreamController<BleSystemEvent> _systemEventController = StreamController<BleSystemEvent>.broadcast();
+  final StreamController<Map<String, double>> _telemetryController = StreamController<Map<String, double>>.broadcast();
   
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
   StreamSubscription<BluetoothAdapterState>? _adapterSubscription;
@@ -56,6 +73,7 @@ class BleService extends ChangeNotifier {
   Stream<String> get hqMessages => _incomingMessagesController.stream;
   Stream<dynamic> get ackStream => _ackController.stream;
   Stream<BleSystemEvent> get systemEventStream => _systemEventController.stream;
+  Stream<Map<String, double>> get telemetryStream => _telemetryController.stream;
 
   BleService() {
     _initAdapterState();
@@ -185,33 +203,61 @@ class BleService extends ChangeNotifier {
         if (kDebugMode) print('📥 BLE RAW DATA: $value');
 
         bool processedAsEvent = false;
+        // String telemetry paketi olma ihtimaline karşı önce string kontrolü yapalım
+        try {
+          String decoded = utf8.decode(value);
+          if (decoded.startsWith("TEL|")) {
+            final parts = decoded.split('|');
+            if (parts.length >= 5) {
+              final data = {
+                'temp': double.tryParse(parts[1]) ?? 0.0,
+                'hum': double.tryParse(parts[2]) ?? 0.0,
+                'press': double.tryParse(parts[3]) ?? 0.0,
+                'iaq': double.tryParse(parts[4]) ?? 0.0,
+              };
+              _telemetryController.add(data);
+            }
+            return; // Eğer telemetri ise byte olaylarını (event) taramaya gerek yok
+          } else if (decoded.startsWith("ACK|")) {
+            _ackController.add(decoded);
+            ForegroundService.showSystemNotification('SOS Onaylandı', 'Mesajınız AFAD Karargahına ulaştı.');
+            return;
+          } else if (decoded.startsWith("HQ|")) {
+            String msg = decoded.replaceFirst("HQ|", "");
+            _incomingMessagesController.add(msg);
+            ForegroundService.showSystemNotification('Karargah (HQ)', msg);
+            return;
+          }
+        } catch (e) {
+          // Eğer UTF8 çevirisi başarısız olursa, bu saf bir binary pakettir. Yolumuza devam edelim.
+        }
+
         for (int byte in value) {
           switch (byte) {
             case 0x06: _ackController.add(0x06); break;
-            case 0x0E: processedAsEvent = true; break;
             case 0x0A: 
               if (kDebugMode) print('🔥 EARTHQUAKE DETECTED IN RAW BYTES!');
               _systemEventController.add(BleSystemEvent.earthquake); 
               processedAsEvent = true;
               break;
             case 0x0B: _systemEventController.add(BleSystemEvent.anomaly); processedAsEvent = true; break;
-            case 0x0C: _systemEventController.add(BleSystemEvent.powerLost); processedAsEvent = true; break;
+            case 0x0C: _systemEventController.add(BleSystemEvent.fire); processedAsEvent = true; break;
             case 0x0D: _systemEventController.add(BleSystemEvent.rhythmicTapping); processedAsEvent = true; break;
+            case 0x0E: _systemEventController.add(BleSystemEvent.badAir); processedAsEvent = true; break;
+            case 0x0F: _systemEventController.add(BleSystemEvent.highHumidity); processedAsEvent = true; break;
+            case 0x10: _systemEventController.add(BleSystemEvent.uncertain); processedAsEvent = true; break;
+            case 0x11: _systemEventController.add(BleSystemEvent.powerLost); processedAsEvent = true; break;
+            case 0x12: processedAsEvent = true; break; // Heartbeat
           }
         }
 
         if (processedAsEvent && value.length == 1) return;
 
+        // Eğer string olarak yakalanamadıysa ve event değilse, ham text olarak ekle (eski tip HQ mesajları vb)
         try {
           String decoded = utf8.decode(value);
-          if (decoded.startsWith("ACK|")) {
-            _ackController.add(decoded);
-          } else if (decoded.startsWith("HQ|")) {
-            _incomingMessagesController.add(decoded.replaceFirst("HQ|", ""));
-          } else {
-            _incomingMessagesController.add(decoded);
-          }
-        } catch (e) { }
+          _incomingMessagesController.add(decoded);
+        } catch (e) {}
       }
     });
 
@@ -231,14 +277,61 @@ class BleService extends ChangeNotifier {
     }
   }
 
-  Future<bool> writeBinary(Uint8List data) async {
-    if (_status == BleConnectionStatus.connected && _rxCharacteristic != null) {
-      try {
-        await _rxCharacteristic!.write(data, withoutResponse: false);
-        return true;
-      } catch (e) { return false; }
+  Future<void> _processQueue() async {
+    if (_isProcessingQueue) return;
+    _isProcessingQueue = true;
+
+    while (_taskQueue.isNotEmpty) {
+      // Find the first high-priority task, or if none, take the first task.
+      int nextTaskIndex = _taskQueue.indexWhere((task) => task.isHighPriority);
+      if (nextTaskIndex == -1) nextTaskIndex = 0; // No high priority tasks, take the oldest normal task
+
+      _BleTask currentTask = _taskQueue.removeAt(nextTaskIndex);
+
+      if (_status == BleConnectionStatus.connected && _rxCharacteristic != null) {
+        try {
+          bool withoutResp = _rxCharacteristic!.properties.writeWithoutResponse;
+          await _rxCharacteristic!.write(currentTask.data, withoutResponse: withoutResp);
+          currentTask.completer.complete(true);
+        } catch (e) {
+          if (kDebugMode) print("BLE Write Failed: $e");
+          currentTask.completer.complete(false);
+        }
+      } else {
+        currentTask.completer.complete(false);
+      }
+
+      // Add a small delay between packets to prevent BLE congestion (crucial for ESP32 stability)
+      await Future.delayed(const Duration(milliseconds: 50));
     }
-    return false;
+
+    _isProcessingQueue = false;
+  }
+
+  Future<bool> writeBinary(Uint8List data, {bool isHighPriority = false}) async {
+    if (_status != BleConnectionStatus.connected || _rxCharacteristic == null) {
+      return false;
+    }
+    
+    final completer = Completer<bool>();
+    _taskQueue.add(_BleTask(data: data, isHighPriority: isHighPriority, completer: completer));
+    
+    // Asynchronously start processing without waiting for it to finish immediately here
+    _processQueue();
+    
+    return await completer.future;
+  }
+
+  Future<bool> sendSilenceCommand() async {
+    return await writeBinary(Uint8List.fromList([0x99]), isHighPriority: true);
+  }
+
+  Future<bool> enableComaMode() async {
+    return await writeBinary(Uint8List.fromList([0x55]), isHighPriority: true);
+  }
+
+  Future<bool> disableComaMode() async {
+    return await writeBinary(Uint8List.fromList([0x56]), isHighPriority: true);
   }
 
   @override
@@ -247,6 +340,7 @@ class BleService extends ChangeNotifier {
     _incomingMessagesController.close();
     _ackController.close();
     _systemEventController.close();
+    _telemetryController.close();
     super.dispose();
   }
 }

@@ -33,7 +33,7 @@ class WhistleService extends ChangeNotifier {
 
   Future<void> toggleWhistle({bool isCriticalBattery = false}) async {
     if (_isPlaying) {
-      _stopWhistle();
+      stopWhistle();
     } else {
       await _startWhistleBurst();
     }
@@ -61,7 +61,7 @@ class WhistleService extends ChangeNotifier {
     }
   }
 
-  Future<void> _stopWhistle() async {
+  Future<void> stopWhistle() async {
     try {
       await _player.stop();
       VolumeController().setVolume(_originalVolume);
