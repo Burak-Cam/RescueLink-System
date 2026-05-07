@@ -158,7 +158,7 @@ class LocaleService extends ChangeNotifier {
       'open_settings': 'Open Settings',
       'manual_fix': 'MANUAL FIX',
       'establishing_tunnel': 'ESTABLISHING TUNNEL...',
-      'searching_gateway': 'SEARCHING FOR GATEWAY...',
+      'searching_gateway': 'SEARCHING FOR DEVICE...',
       'searching_gps': 'SEARCHING FOR GPS...',
       'sos_handed': 'SOS HANDED TO GATEWAY',
       'send_failure': 'SEND FAILURE',

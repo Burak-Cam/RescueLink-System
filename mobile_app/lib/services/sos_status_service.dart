@@ -4,6 +4,7 @@ import 'storage_service.dart';
 
 enum SosProcessState {
   idle,
+  queuedOffline,
   sending,
   sentToNode,
   deliveredToHq,

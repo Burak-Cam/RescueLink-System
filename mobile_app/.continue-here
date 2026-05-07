@@ -1,24 +1,20 @@
-# RescueLink Session Checkpoint: Phase 9 - Advanced Deployment & Protocol Hardening
-**Timestamp:** 2026-05-04
-**Status:** V4.6 Protocol Synchronized / Production Ready
+# RescueLink Session Checkpoint: Pre-Release Stabilization
+**Timestamp:** 2026-05-06
+**Status:** Mobile App and Edge Node V5.0 Fully Synchronized & Hardened
 
 ### Bugünün Başarıları (Devrimsel Güncellemeler):
-1. **V4.6 Binary Protokol Entegrasyonu (Sıfır Çakışma):**
-   - Edge Node'daki çift çekirdek UART (LoRa) çakışmaları `lora_mutex` ile kalıcı olarak çözüldü.
-   - Otonom (telefonsuz) paket atımları için ESP32 belleğine GPS Cache özelliği eklendi. Otonom paketlerde koordinatlar sıfırlanmıyor ve kişi sayısı her zaman 1 olarak gönderiliyor.
-   - Yangın AI algoritması performansı `memmove` kullanılarak (Sliding Window) optimize edildi.
-2. **Tapping (Ritmik Vuruş) SOS Optimizasyonu:**
-   - Tapping sinyalleri artık gereksiz "Sağlıklı" veya "1 Kişi" metriklerini göndermiyor. 
-   - İhbar, net olarak "RİTMİK VURUŞ ALGILANDI" mesajıyla atılıyor ve AFAD'a 0x04 Binary Code ile iletiliyor.
-   - Sahte ihbarları (False Alarms) engellemek için Tapping SOS, sadece sistem öncesinde bir deprem (0x0A) yaşandıysa tetiklenecek şekilde sıkı bir güvenlik kilidine bağlandı (Geliştirici Modunda serbest bırakıldı).
-3. **Canlı Çevresel Telemetri (UI):**
-   - Yangın ve Gaz ekranlarına BME680 (Sıcaklık, Nem, Basınç, IAQ) verilerini anlık (TEL|) olarak gösteren bir kokpit paneli eklendi.
-4. **Push Notifications (Arka Plan Karargah Sistemi):**
-   - `flutter_foreground_task` kullanılarak; HQ yayınları, ACK SOS onayları, Bağlantı (Heartbeat) kayıpları ve Otonom Yangın/Gaz Dead Man's Switch diyalogları telefonun ana ekranına (uygulama kapalıyken bile) Android Sistem Bildirimi olarak eklendi.
-   - Gereksiz yere pil harcayan ve paniğe yol açan telefondaki siren (`whistle`) Fire/Gas sahnelerinden kaldırıldı; yerine sessiz ve hayati Push Notification getirildi.
-5. **Memory Leak Koruması:**
-   - Mobil uygulamadaki tüm açık StreamSubscription'lar (telemetry, HQ messages, acks) `dispose()` içerisinde kapatılarak donma ve aşırı CPU/Pil tüketimi engellendi.
+1. **Otonom Kalkan (Kıyamet Hafızası):** ESP32 cihazına `gercek_bir_deprem_yasandi_mi` bayrağı eklendi. Cihaz test esnasında veya telefon bağlıyken otonom Karargah fırlatmalarını engelliyor. Sadece "telefon koptuğunda" ve "deprem onayı varsa" Tapping SOS LoRa'dan fırlatılıyor. (Double-send önlendi).
+2. **Akıllı Anti-Spam (30 Dk & 24 Saat Kuralı):** 
+   - Tapping SOS'ler için ağ sıkışıklığını önlemek adına 30 dakikalık (payload değişimini umursamayan) bekleme süresi getirildi.
+   - Manuel SOS'ler için "Proof of Life" (Yaşam Belirtisi) amacıyla, veri değişmese bile 24 saatte bir tekrar gönderim izni (bypass) verildi.
+3. **Protocol Endianness & Payload Fix (12->16 Byte):** Dart tarafındaki GPS Float verilerinin ESP32'de çöp olmasını engellemek için `Endian.little` formatlaması (ByteData) kusursuz entegre edildi. Sağlık ve Kişi Sayısı verileri başarıyla 16 Byte'lık Mesh zarfına gömüldü.
+4. **Triage Verisi Kalıcılığı:** Mobil uygulamadaki "Sıfır Kişi" mantık hatası giderildi; afet türü ne olursa olsun (Yangın, Gaz, Tapping) kişinin güncel Triage (Sağlık/Kişi) durumu Gateway'de üzerine yazılmamak üzere mühürlendi.
+5. **Offline Queue & Auto-Reconnect:** 
+   - Cihaz koptuğunda SOS butonu kilidi kaldırıldı. Gönderilen SOS'ler `queuedOffline` state'ine alınıp Progress Bar'da gösteriliyor.
+   - `BleService` içine kopmaları anında fark eden ve otonom arka plan taraması yapan `_autoReconnectLoop` eklendi. Cihaz geldiği an kuyruktaki SOS en güncel GPS ile Karargaha ateşleniyor.
+6. **UI Enhancements:** Geçmiş sekmesine (History) tarih/saat eklendi ve Türkçe çeviri düzeltmeleri ("CİHAZ ARANIYOR") yapıldı.
 
-### Sonraki Oturum İçin (Next Steps):
-- **Gateway Entegrasyonu:** RPi4 tarafındaki Gateway kodunun, kök dizine bıraktığımız `RESCUELINK_V4.1_PROTOCOL.md` (Aslında V4.6 kapasiteli) yapısına göre 12 byte'lık binary paketi hatasız ayrıştırıp ayrıştırmadığının saha testi yapılacak.
-- **24 Saatlik Enkaz Testi:** Her iki cihaz da (ESP32 ve Redmi Note 9S) güç bankalarıyla aktif edilerek gerçek bir senaryo testi (End-to-End Simulation) yapılacak. Koma modunda pil dayanımı ölçülecek.
+### 📍 Next Steps (Sonraki Oturum Hedefleri)
+1. **Gateway (Karargah) Entegrasyonu:** RPi4 veya merkez cihazının 16 Byte'lık Mesh paketlerini sorunsuz alıp harita/dashboard üzerinde doğru ayırıp ayrıştırmadığının saha testi yapılacak. (Özellikle Health ve Person Count byte'ları test edilecek).
+2. **24 Saatlik Kapsamlı Saha Simülasyonu:** Edge Node ve Redmi Note 9S cihazlarıyla "Enkaz/Koma" modunda batarya dayanım ve kopma-bağlanma stres testleri yapılacak.
+3. **Deployment:** Production Release APK oluşturulacak.

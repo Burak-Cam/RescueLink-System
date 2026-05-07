@@ -12,6 +12,9 @@
   - [x] **Live Environmental Telemetry:** BME680 sensor data (Temp, Hum, Press, IAQ) dynamically displayed in the Fire/Gas scene.
   - [x] **Foreground Notifications:** Integrated `flutter_foreground_task` for silent push alerts (HQ messages, ACKs, Heartbeat loss, Fire/Gas danger).
   - [x] **Power/Logic Optimization:** Fixed memory leaks in Flutter stream subscriptions and optimized Edge Node sliding window AI (`memmove`).
+  - [x] **Smart Anti-Spam & Proof of Life:** Implemented a 30-minute cooldown for Tapping SOS to prevent network congestion, and a 24-hour "Proof of Life" bypass for manual SOS messages. Added Date/Time UI to History logs.
+  - [x] **Protocol Endianness & Payload Fix:** Fixed GPS corruption by enforcing `Endian.little` in Dart, and mapped missing Health/Person Count data into the 16-byte LoRa packet on ESP32.
+  - [x] **Resilience & Connectivity:** Restored Offline SOS Queue logic (allowing SOS intents while disconnected to fire upon reconnection) and built a robust BLE background Auto-Reconnect loop in `BleService`.
 
 ## Next Steps
 1. **End-to-End Field Stress Test:** 24h survival simulation in rubble, validating LoRa mesh hopping.

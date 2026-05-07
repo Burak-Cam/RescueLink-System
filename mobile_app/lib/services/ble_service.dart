@@ -152,6 +152,16 @@ class BleService extends ChangeNotifier {
       _connectedDevice = device;
       _lastConnectedDevice = device;
 
+      // Listen for unexpected disconnections
+      _connectionSubscription?.cancel();
+      _connectionSubscription = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          if (_connectedDevice != null && _connectedDevice!.remoteId == device.remoteId) {
+            _handleUnexpectedDisconnect("Device powered off or out of range");
+          }
+        }
+      });
+
       List<BluetoothService> services = await device.discoverServices();
       for (var service in services) {
         if (service.uuid.toString().toUpperCase().contains("6E400001")) {
@@ -180,6 +190,7 @@ class BleService extends ChangeNotifier {
   }
 
   void _handleUnexpectedDisconnect(String reason) {
+    if (kDebugMode) print("💔 Disconnected: $reason");
     _connectedDevice = null;
     _rxCharacteristic = null;
     _txCharacteristic = null;
@@ -188,6 +199,28 @@ class BleService extends ChangeNotifier {
     _onValueReceivedSubscription?.cancel();
     ForegroundService.stop();
     notifyListeners();
+    
+    // Auto-reconnect attempt
+    if (_lastConnectedDevice != null && _adapterState == BluetoothAdapterState.on) {
+      if (kDebugMode) print("🔄 Attempting to auto-reconnect to ${_lastConnectedDevice!.remoteId}");
+      _autoReconnectLoop();
+    }
+  }
+
+  Future<void> _autoReconnectLoop() async {
+    if (_status == BleConnectionStatus.connecting || _status == BleConnectionStatus.connected) return;
+    
+    _status = BleConnectionStatus.scanning;
+    notifyListeners();
+
+    while (_lastConnectedDevice != null && _status != BleConnectionStatus.connected) {
+      final target = await findDevice(_lastConnectedDevice!.remoteId.toString(), timeout: const Duration(seconds: 5));
+      if (target != null) {
+        final success = await connect(target);
+        if (success) return; // Reconnected successfully
+      }
+      await Future.delayed(const Duration(seconds: 2));
+    }
   }
 
   Future<void> _setupNotification() async {

@@ -64,6 +64,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _listenForSystemEvents();
     _listenForTelemetry();
     _checkCityAndPromptMap();
+    
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<BleService>().addListener(_onBleStateChanged);
+    });
+  }
+
+  void _onBleStateChanged() {
+    if (!mounted) return;
+    final ble = context.read<BleService>();
+    final sosStatus = context.read<SosStatusService>();
+    if (ble.status == BleConnectionStatus.connected && sosStatus.state == SosProcessState.queuedOffline) {
+      if (kDebugMode) print("🌐 [OFFLINE QUEUE] Connection restored! Firing queued SOS...");
+      _sendSos(type: _activeSosType, fromQueue: true);
+    }
   }
 
   void _listenForTelemetry() {
@@ -90,6 +104,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    context.read<BleService>().removeListener(_onBleStateChanged);
     _telemetrySub?.cancel();
     _messagesSub?.cancel();
     _ackSub?.cancel();
@@ -263,17 +278,16 @@ class _HomeScreenState extends State<HomeScreen> {
           );
           break;
         case BleSystemEvent.rhythmicTapping:
-          HapticFeedback.heavyImpact();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(locale.t('tapping_msg')),
-              backgroundColor: const Color(0xFF2E7D32),
-              duration: const Duration(seconds: 4),
-            ),
-          );
-          // Otonom Tapping SOS sadece bir deprem yaşandıysa (veya Dev Mode açıksa test için) tetiklenmeli
           final storage = context.read<StorageService>();
           if (_hasEarthquakeOccurred || storage.isDevMode()) {
+            HapticFeedback.heavyImpact();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(locale.t('tapping_msg')),
+                backgroundColor: const Color(0xFF2E7D32),
+                duration: const Duration(seconds: 4),
+              ),
+            );
             _sendSos(type: "TAPPING");
           } else {
             if (kDebugMode) print("Tapping ignored: No earthquake occurred.");
@@ -363,7 +377,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _sendSos({String type = "EARTHQUAKE"}) async {
+  Future<void> _sendSos({String type = "EARTHQUAKE", bool fromQueue = false}) async {
     final ble = context.read<BleService>();
     final storage = context.read<StorageService>();
     final gps = context.read<GpsService>();
@@ -374,16 +388,23 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() { _activeSosType = type; });
 
     // 1. Anti-Spam: Aynı mesajsa sessizce çık (GPS uyarısı gösterme)
-    if (!storage.isDevMode() && storage.getLastSosTimestamp() != null) {
+    if (!storage.isDevMode() && storage.getLastSosTimestamp() != null && !fromQueue) {
       if (!sosStatus.hasPayloadChanged(_healthStatusKey, _personCount)) {
         return; 
       }
     }
 
     // 2. GPS Kontrolü (Sadece yeni/farklı mesaj gönderiliyorsa)
-    if (!gps.hasFix && !gps.isManual) {
+    if (!gps.hasFix && !gps.isManual && !fromQueue) {
       bool proceed = await _showGpsWarning(locale);
       if (!proceed) return;
+    }
+
+    // NEW LOGIC FOR OFFLINE QUEUING:
+    if (ble.status != BleConnectionStatus.connected && !fromQueue) {
+      gps.forceEmergencyWake();
+      await sosStatus.setStatus(SosProcessState.queuedOffline);
+      return;
     }
 
     // 3. Gönderim Durumunu Başlat (Bu aşamadan sonra buton kilitlenir)
@@ -420,39 +441,36 @@ class _HomeScreenState extends State<HomeScreen> {
     if (storage.isDevMode() && storage.useStringPayload()) {
       payload = utf8.encode(historyString) as Uint8List;
     } else {
-      final bytes = BytesBuilder();
-      bytes.addByte(0x01); // Header: SOS Packet
+      final byteData = ByteData(12);
       
-      // Afet Tipi (Disaster Type) için 1 Byte (0=Manual, 1=Earthquake, 2=Fire, 3=Gas, 4=Tapping)
+      // 0. Byte: Header
+      byteData.setUint8(0, 0x01); 
+      
+      // 1. Byte: Afet Tipi
       int typeValue = 0;
       if (type == "EARTHQUAKE") typeValue = 1;
       else if (type == "FIRE") typeValue = 2;
       else if (type == "GAS") typeValue = 3;
       else if (type == "TAPPING") typeValue = 4;
-      bytes.addByte(typeValue);
+      byteData.setUint8(1, typeValue);
       
+      // 2-9. Bytes: GPS (Little-Endian)
       if (gps.currentPosition != null) {
-        final byteData = ByteData(8);
-        byteData.setFloat32(0, gps.currentPosition!.latitude);
-        byteData.setFloat32(4, gps.currentPosition!.longitude);
-        bytes.add(byteData.buffer.asUint8List());
-      } else { 
-        bytes.add(Uint8List(8)); 
-      }
-      
-      if (type == "EARTHQUAKE") {
-        int healthValue = 0;
-        if (_healthStatusKey == "Lightly Injured") healthValue = 1;
-        if (_healthStatusKey == "Severely Injured") healthValue = 2;
-        bytes.addByte(healthValue);
-        bytes.addByte(_personCount);
+        byteData.setFloat32(2, gps.currentPosition!.latitude, Endian.little);
+        byteData.setFloat32(6, gps.currentPosition!.longitude, Endian.little);
       } else {
-        // FIRE, GAS ve TAPPING durumlarında sağlık ve kişi sayısı 0/0 olarak set edilir
-        bytes.addByte(0); 
-        bytes.addByte(0);
+        byteData.setFloat32(2, 0.0, Endian.little);
+        byteData.setFloat32(6, 0.0, Endian.little);
       }
       
-      payload = bytes.takeBytes();
+      // 10-11. Bytes: Sağlık ve Kişi Sayısı (HER DURUMDA GÖNDERİLMELİ)
+      int healthValue = 0;
+      if (_healthStatusKey == "Lightly Injured") healthValue = 1;
+      if (_healthStatusKey == "Severely Injured") healthValue = 2;
+      byteData.setUint8(10, healthValue);
+      byteData.setUint8(11, _personCount);
+      
+      payload = byteData.buffer.asUint8List();
     }
 
     final success = await ble.writeBinary(payload, isHighPriority: true);
@@ -463,8 +481,17 @@ class _HomeScreenState extends State<HomeScreen> {
         await sosStatus.setStatus(SosProcessState.sentToNode);
         setState(() {}); // <-- UPDATE UI FOR HISTORY
       } else {
-        await sosStatus.setStatus(SosProcessState.idle);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(locale.t('send_failure')), backgroundColor: const Color(0xFFD32F2F)));
+        // Cihaz fiziksel olarak kapandıysa ancak BLE hala 'bağlı' sanıyorsa write işlemi başarısız olur.
+        // Bu durumda paketi çöpe atmak yerine Çevrimdışı Kuyruğa (Offline Queue) devrediyoruz.
+        await sosStatus.setStatus(SosProcessState.queuedOffline);
+        if (!fromQueue) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(locale.isEnglish ? "Connection error. SOS queued for auto-retry." : "Bağlantı hatası. SOS kuyruğa alındı."), 
+              backgroundColor: const Color(0xFFFF9800),
+            )
+          );
+        }
       }
     }
   }
@@ -749,7 +776,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildTruthfulProgressBar(SosStatusService sosStatus, LocaleService locale) {
-    bool isSending = sosStatus.state == SosProcessState.sending;
+    bool isQueued = sosStatus.state == SosProcessState.queuedOffline;
+    bool isSending = sosStatus.state == SosProcessState.sending || isQueued;
     bool isDeliveredToNode = sosStatus.state == SosProcessState.sentToNode || sosStatus.state == SosProcessState.deliveredToHq;
     bool isHqConfirmed = sosStatus.hqConfirmed;
     return Container(
@@ -825,7 +853,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildSosButton(BleService ble, SosStatusService sosStatus, LocaleService locale, {String type = "EARTHQUAKE", Color color = AppTheme.primaryRed, String? label}) {
     bool isConnected = ble.status == BleConnectionStatus.connected;
     bool isCooldown = sosStatus.isCooldownActive;
-    bool isSending = sosStatus.state == SosProcessState.sending;
+    bool isSending = sosStatus.state == SosProcessState.sending || sosStatus.state == SosProcessState.queuedOffline;
     
     final storage = context.read<StorageService>();
     bool isLockedByType = false;
@@ -835,7 +863,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (type == "GAS" && !_isGasActive) isLockedByType = true;
     }
 
-    bool isDisabled = !isConnected || isCooldown || isSending || isLockedByType;
+    bool isDisabled = isCooldown || isSending || isLockedByType;
     String buttonText = label ?? locale.t('sos_button').toUpperCase();
     
     return ElevatedButton.icon(
@@ -1024,6 +1052,7 @@ class _HomeScreenState extends State<HomeScreen> {
               type ??= "SOS";
               
               Color typeColor = (type == "FIRE" || type == "GAS") ? const Color(0xFFD32F2F) : const Color(0xFFFFC107);
+              String formattedDate = "${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}";
               
               return Container(
                 margin: const EdgeInsets.only(bottom: 8), 
@@ -1037,7 +1066,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start, 
                   children: [
                     Text(
-                      "${time.hour}:${time.minute.toString().padLeft(2, '0')} - $type SENT", 
+                      "$formattedDate - $type SENT", 
                       style: TextStyle(color: typeColor, fontWeight: FontWeight.w900, fontSize: 11)
                     ), 
                     const SizedBox(height: 4), 
