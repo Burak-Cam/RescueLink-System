@@ -8,7 +8,6 @@ class StorageService {
   static const String _locationKey = 'savedLocation';
   static const String _sosHistoryKey = 'sos_history';
   static const String _lastSosTimestampKey = 'last_sos_timestamp';
-  static const String _emergencyContactsKey = 'emergency_contacts';
   static const String _devModeKey = 'dev_mode';
   static const String _profileCompleteKey = 'profile_complete';
   static const String _useStringPayloadKey = 'use_string_payload';
@@ -79,21 +78,6 @@ class StorageService {
     await _prefs.setString(_lastNameKey, last);
     await _prefs.setString(_countryKey, country);
     await _prefs.setString(_locationKey, location);
-  }
-
-  // Emergency Contacts
-  List<Map<String, String>> getEmergencyContacts() {
-    final List<String>? encoded = _prefs.getStringList(_emergencyContactsKey);
-    if (encoded == null) return [];
-    return encoded.map((item) {
-      final parts = item.split('|');
-      return {'name': parts[0], 'phone': parts[1]};
-    }).toList();
-  }
-
-  Future<void> saveEmergencyContacts(List<Map<String, String>> contacts) async {
-    final List<String> encoded = contacts.map((c) => "${c['name']}|${c['phone']}").toList();
-    await _prefs.setStringList(_emergencyContactsKey, encoded);
   }
 
   // Developer Mode

@@ -16,13 +16,22 @@ enum BleSystemEvent {
   earthquake,
   anomaly,
   fire,
-  powerLost,
+  criticalTemperature,
   rhythmicTapping,
   badAir,
   highHumidity,
-  uncertain,
+  gasLeak,
   heartbeatLost,
   heartbeatRestored,
+  otaReady,
+  otaChunkAck,
+  otaError,
+  otaSuccess,
+}
+
+class OtaUpdateEvent {
+  final String version;
+  OtaUpdateEvent(this.version);
 }
 
 class _BleTask {
@@ -58,8 +67,9 @@ class BleService extends ChangeNotifier {
   final StreamController<String> _incomingMessagesController = StreamController<String>.broadcast();
   final StreamController<dynamic> _ackController = StreamController<dynamic>.broadcast();
   final StreamController<BleSystemEvent> _systemEventController = StreamController<BleSystemEvent>.broadcast();
+  final StreamController<OtaUpdateEvent> _otaUpdateEventController = StreamController<OtaUpdateEvent>.broadcast();
   final StreamController<Map<String, double>> _telemetryController = StreamController<Map<String, double>>.broadcast();
-  
+
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
   StreamSubscription<BluetoothAdapterState>? _adapterSubscription;
   StreamSubscription<List<int>>? _onValueReceivedSubscription;
@@ -73,6 +83,7 @@ class BleService extends ChangeNotifier {
   Stream<String> get hqMessages => _incomingMessagesController.stream;
   Stream<dynamic> get ackStream => _ackController.stream;
   Stream<BleSystemEvent> get systemEventStream => _systemEventController.stream;
+  Stream<OtaUpdateEvent> get otaUpdateEventStream => _otaUpdateEventController.stream;
   Stream<Map<String, double>> get telemetryStream => _telemetryController.stream;
 
   BleService() {
@@ -175,6 +186,14 @@ class BleService extends ChangeNotifier {
       if (_rxCharacteristic != null && _txCharacteristic != null) {
         _status = BleConnectionStatus.connected;
         _startHeartbeatTimer();
+        // Request higher MTU for OTA and faster transfers
+        if (defaultTargetPlatform == TargetPlatform.android) {
+          try {
+            await device.requestMtu(512);
+          } catch (e) {
+            if (kDebugMode) print("MTU request failed: $e");
+          }
+        }
         // CRITICAL: Await notification setup before returning success
         await _setupNotification(); 
         await ForegroundService.start();
@@ -260,6 +279,10 @@ class BleService extends ChangeNotifier {
             _incomingMessagesController.add(msg);
             ForegroundService.showSystemNotification('Karargah (HQ)', msg);
             return;
+          } else if (decoded.startsWith("OTA_AVAIL|")) {
+            String version = decoded.split("|")[1];
+            _otaUpdateEventController.add(OtaUpdateEvent(version));
+            return;
           }
         } catch (e) {
           // Eğer UTF8 çevirisi başarısız olursa, bu saf bir binary pakettir. Yolumuza devam edelim.
@@ -278,12 +301,16 @@ class BleService extends ChangeNotifier {
             case 0x0D: _systemEventController.add(BleSystemEvent.rhythmicTapping); processedAsEvent = true; break;
             case 0x0E: _systemEventController.add(BleSystemEvent.badAir); processedAsEvent = true; break;
             case 0x0F: _systemEventController.add(BleSystemEvent.highHumidity); processedAsEvent = true; break;
-            case 0x10: _systemEventController.add(BleSystemEvent.uncertain); processedAsEvent = true; break;
-            case 0x11: _systemEventController.add(BleSystemEvent.powerLost); processedAsEvent = true; break;
+            case 0x10: _systemEventController.add(BleSystemEvent.gasLeak); processedAsEvent = true; break;
+            case 0x11: _systemEventController.add(BleSystemEvent.criticalTemperature); processedAsEvent = true; break;
             case 0x12: processedAsEvent = true; break; // Heartbeat
+            case 0x20: _systemEventController.add(BleSystemEvent.otaReady); processedAsEvent = true; break;
+            case 0x21: _systemEventController.add(BleSystemEvent.otaChunkAck); processedAsEvent = true; break;
+            case 0x22: _systemEventController.add(BleSystemEvent.otaError); processedAsEvent = true; break;
+            case 0x23: _systemEventController.add(BleSystemEvent.otaSuccess); processedAsEvent = true; break;
           }
         }
-
+        
         if (processedAsEvent && value.length == 1) return;
 
         // Eğer string olarak yakalanamadıysa ve event değilse, ham text olarak ekle (eski tip HQ mesajları vb)
@@ -323,8 +350,9 @@ class BleService extends ChangeNotifier {
 
       if (_status == BleConnectionStatus.connected && _rxCharacteristic != null) {
         try {
-          bool withoutResp = _rxCharacteristic!.properties.writeWithoutResponse;
-          await _rxCharacteristic!.write(currentTask.data, withoutResponse: withoutResp);
+          // Use withoutResponse: true because ESP32 delays GATT ACK while writing to flash, 
+          // and we already rely on our custom 0x21 application-level ACK for flow control.
+          await _rxCharacteristic!.write(currentTask.data, withoutResponse: true);
           currentTask.completer.complete(true);
         } catch (e) {
           if (kDebugMode) print("BLE Write Failed: $e");
@@ -355,7 +383,12 @@ class BleService extends ChangeNotifier {
     return await completer.future;
   }
 
+  Future<bool> writeText(String text, {bool isHighPriority = false}) async {
+    return await writeBinary(Uint8List.fromList(utf8.encode(text)), isHighPriority: isHighPriority);
+  }
+
   Future<bool> sendSilenceCommand() async {
+    await writeBinary(Uint8List.fromList([0xF0]), isHighPriority: true);
     return await writeBinary(Uint8List.fromList([0x99]), isHighPriority: true);
   }
 

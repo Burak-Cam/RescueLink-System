@@ -7,10 +7,10 @@ import 'services/gps_service.dart';
 import 'services/sos_status_service.dart';
 import 'services/locale_service.dart';
 import 'services/whistle_service.dart';
-import 'services/sms_queue_service.dart';
 import 'services/map_service.dart';
 import 'services/battery_service.dart';
 import 'services/foreground_service.dart';
+import 'services/ota_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/auto_connect_screen.dart';
 import 'screens/onboarding_screen.dart';
@@ -47,9 +47,9 @@ void main() async {
         ChangeNotifierProvider(create: (_) => SosStatusService(storageService)),
         ChangeNotifierProvider(create: (_) => LocaleService(prefs)),
         ChangeNotifierProvider(create: (_) => WhistleService()),
-        ChangeNotifierProvider(create: (_) => SmsQueueService(storageService)),
         ChangeNotifierProvider(create: (_) => MapService(storageService)),
         ChangeNotifierProvider(create: (_) => BatteryStateService()),
+        ChangeNotifierProxyProvider<BleService, OtaService>(create: (ctx) => OtaService(bleService), update: (ctx, ble, ota) => ota!),
       ],
       child: RescueLinkApp(
         isProfileComplete: storageService.isProfileComplete(),

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import '../services/storage_service.dart';
 import '../services/locale_service.dart';
 import '../services/gps_service.dart';
 import '../services/foreground_service.dart';
+import '../services/ble_service.dart';
 import 'location_picker_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -19,8 +21,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final TextEditingController _lastNameController = TextEditingController();
   final TextEditingController _addressController = TextEditingController();
   String? _selectedCountry;
-  
-  List<Map<String, String>> _emergencyContacts = [];
+
   bool _isDevMode = false;
   bool _useStringPayload = false;
   String? _forceSosLang;
@@ -35,8 +36,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _addressController.text = storage.getLocation();
     _selectedCountry = storage.getCountry();
     if (_selectedCountry?.isEmpty ?? true) _selectedCountry = null;
-    
-    _emergencyContacts = List.from(storage.getEmergencyContacts());
+
     _isDevMode = storage.isDevMode();
     _useStringPayload = storage.useStringPayload();
     _forceSosLang = storage.getForceSosLang();
@@ -52,38 +52,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   void _saveProfile() {
     final storage = context.read<StorageService>();
-    
+
     storage.saveProfile(
       first: _firstNameController.text,
       last: _lastNameController.text,
       country: _selectedCountry ?? "",
       location: _addressController.text,
     );
-    storage.saveEmergencyContacts(_emergencyContacts);
     storage.setDevMode(_isDevMode);
     storage.setUseStringPayload(_useStringPayload);
     storage.setForceSosLang(_forceSosLang);
-    
+
     setState(() => _isDirty = false);
   }
 
-  void _addContact() {
-    setState(() {
-      _emergencyContacts.add({'name': '', 'phone': ''});
-      _isDirty = true;
-    });
-  }
-
-  void _removeContact(int index) {
-    setState(() {
-      _emergencyContacts.removeAt(index);
-      _isDirty = true;
-    });
-  }
-
   @override
-  Widget build(BuildContext context) {
-    final locale = context.watch<LocaleService>();
+  Widget build(BuildContext context) {    final locale = context.watch<LocaleService>();
     final gps = context.watch<GpsService>();
 
     return Scaffold(
@@ -200,6 +184,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             
             const SizedBox(height: 32),
+            _buildSectionHeader(locale.isEnglish ? "DEVICE SETTINGS" : "CİHAZ AYARLARI"),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.wifi),
+              label: Text(locale.isEnglish ? "SETUP WI-FI (FOR OTA & AI)" : "WI-FI KURULUMU (OTA & AI İÇİN)"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2B2B2B),
+                side: const BorderSide(color: Colors.white12),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              onPressed: () {
+                _showWifiDialog(context, locale);
+              },
+            ),
+
+            const SizedBox(height: 32),
             _buildSectionHeader(locale.t('battery_opt_title')),
             Container(
               padding: const EdgeInsets.all(16),
@@ -229,34 +228,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
 
             const SizedBox(height: 32),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                _buildSectionHeader(locale.t('emergency_contacts')),
-                IconButton(
-                  icon: const Icon(Icons.person_add_alt_1, color: Color(0xFF2E7D32)),
-                  onPressed: _addContact,
-                ),
-              ],
-            ),
-            
-            if (_emergencyContacts.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 20),
-                child: Text(
-                  locale.isEnglish ? "No emergency contacts added." : "Acil durum kişisi eklenmedi.",
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white24, fontStyle: FontStyle.italic),
-                ),
-              ),
-
-            ...List.generate(_emergencyContacts.length, (index) {
-              return _buildContactCard(index, locale);
-            }),
-            
-            const SizedBox(height: 32),
-            _buildSectionHeader(locale.t('dev_mode')),
-            SwitchListTile(
+            _buildSectionHeader(locale.t('dev_mode')),            SwitchListTile(
               title: Text(locale.t('dev_mode'), style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Text(locale.t('dev_mode_desc'), style: const TextStyle(color: Colors.white54, fontSize: 12)),
               value: _isDevMode,
@@ -310,6 +282,78 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  void _showWifiDialog(BuildContext context, LocaleService locale) async {
+    final ssidController = TextEditingController();
+    final passController = TextEditingController();
+    final ble = context.read<BleService>();
+
+    // Try to auto-fetch current Wi-Fi SSID
+    try {
+      final info = NetworkInfo();
+      String? wifiName = await info.getWifiName(); // e.g. "MyNetwork"
+      if (wifiName != null) {
+        // network_info_plus sometimes returns SSID with quotes on Android like '"MyNetwork"'
+        wifiName = wifiName.replaceAll('"', '');
+        ssidController.text = wifiName;
+      }
+    } catch (e) {
+      debugPrint("Failed to get wifi name: $e");
+    }
+
+    if (!context.mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF2B2B2B),
+        title: Text(locale.isEnglish ? "Wi-Fi Setup" : "Wi-Fi Kurulumu", style: const TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: ssidController,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                labelText: locale.isEnglish ? "Network Name (SSID)" : "Ağ Adı (SSID)",
+                labelStyle: const TextStyle(color: Colors.white54),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passController,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                labelText: locale.isEnglish ? "Password" : "Şifre",
+                labelStyle: const TextStyle(color: Colors.white54),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(locale.t('cancel'), style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final ssid = ssidController.text.trim();
+              final pass = passController.text.trim();
+              if (ssid.isNotEmpty) {
+                ble.writeText("WIFI|$ssid|$pass");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(locale.isEnglish ? "Wi-Fi credentials sent to device." : "Wi-Fi bilgileri cihaza gönderildi.")),
+                );
+              }
+              Navigator.pop(context);
+            },
+            child: Text(locale.isEnglish ? "Send" : "Gönder"),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSectionHeader(String title) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12.0),
@@ -335,70 +379,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Colors.white10)),
           focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFFFC107))),
         ),
-      ),
-    );
-  }
-
-  Widget _buildContactCard(int index, LocaleService locale) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2B2B2B),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.person_outline, color: Colors.white54, size: 20),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  decoration: InputDecoration(
-                    hintText: locale.t('contact_name'),
-                    hintStyle: const TextStyle(color: Colors.white24),
-                    border: InputBorder.none,
-                  ),
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                  onChanged: (val) {
-                    _emergencyContacts[index]['name'] = val;
-                    _markDirty();
-                  },
-                  controller: TextEditingController(text: _emergencyContacts[index]['name'])..selection = TextSelection.collapsed(offset: _emergencyContacts[index]['name']?.length ?? 0),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.remove_circle_outline, color: Color(0xFFD32F2F), size: 20),
-                onPressed: () => _removeContact(index),
-              ),
-            ],
-          ),
-          const Divider(color: Colors.white10),
-          Row(
-            children: [
-              const Icon(Icons.phone_outlined, color: Colors.white54, size: 20),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  decoration: InputDecoration(
-                    hintText: locale.t('contact_phone'),
-                    hintStyle: const TextStyle(color: Colors.white24),
-                    border: InputBorder.none,
-                  ),
-                  keyboardType: TextInputType.phone,
-                  style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.bold),
-                  onChanged: (val) {
-                    _emergencyContacts[index]['phone'] = val;
-                    _markDirty();
-                  },
-                  controller: TextEditingController(text: _emergencyContacts[index]['phone'])..selection = TextSelection.collapsed(offset: _emergencyContacts[index]['phone']?.length ?? 0),
-                ),
-              ),
-            ],
-          ),
-        ],
       ),
     );
   }

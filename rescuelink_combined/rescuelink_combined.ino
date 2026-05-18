@@ -26,6 +26,11 @@
 #define RXD2       18
 #define TXD2       17
 
+// --- MESH AĞI KİMLİKLERİ ---
+#define NODE_ID      0x01   // Bu cihazın kimliği (Kurye cihazına yüklerken bunu 0x02 yap!)
+#define GATEWAY_ID   0x00   // Merkezin kimliği
+#define MAX_TTL      2      // Paket en fazla kaç kere sekebilir?
+
 // --- BUZZER ---
 const int frekans    = 2000;
 const int cozunurluk = 8;
@@ -36,9 +41,18 @@ int   calisma_modu = 0;
 bool  ilk_acilis   = true;
 const int MPU_ADDR = 0x68;
 
-// 🛠️ YENİ: Cihazın kendi hafızasında tuttuğu son koordinatlar
 float son_lat = 0.0;
 float son_lon = 0.0;
+uint8_t son_saglik_durumu = 0;
+uint8_t son_kisi_sayisi = 1;
+
+// 🔥 YENİ ZIRH: Kıyamet Hafızası (Deprem onaylandı mı?)
+bool gercek_bir_deprem_yasandi_mi = false; 
+
+// --- MESH (RÖLE) HAFIZASI ---
+uint8_t global_msg_id = 0;      
+uint8_t msg_cache[10] = {0};    
+int cache_index = 0;
 
 // --- KİLİTLER (MUTEX) ---
 SemaphoreHandle_t fire_index_mutex;
@@ -76,7 +90,7 @@ bool onceki_koma_modu = false;
 // --- TFLite Micro (Yangın AI) ---
 #define FIRE_INPUT_SIZE   200
 #define FIRE_OUTPUT_SIZE  4
-#define TENSOR_ARENA_SIZE (16 * 1024)
+#define TENSOR_ARENA_SIZE (48 * 1024)
 
 namespace {
   tflite::AllOpsResolver       fire_resolver;
@@ -96,27 +110,41 @@ const char* fire_labels[4] = {"air_quality_bad", "fire", "humidity", "normal"};
 BLECharacteristic* pTxCharacteristic;
 bool deviceConnected = false;
 
+// --- BLE BAĞLANTI YÖNETİMİ (KOPMA FIX) ---
 class MyServerCallbacks : public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer)    { deviceConnected = true; }
-    void onDisconnect(BLEServer* pServer) { deviceConnected = false; }
+    void onConnect(BLEServer* pServer) { 
+        deviceConnected = true; 
+        Serial.println("🔗 [BLE] Telefon bağlandı.");
+    }
+    void onDisconnect(BLEServer* pServer) { 
+        deviceConnected = false; 
+        // 🔥 İŞTE ÇÖZÜM BURADA: Bağlantı koparsa cihazı tekrar görünür yap!
+        pServer->startAdvertising(); 
+        Serial.println("💔 [BLE] Bağlantı koptu. Advertising (Görünürlük) tekrar başlatıldı.");
+    }
 };
 
-// --- BLE RX (GELEN VERİ DİNLEME - HAM BİNARY OKUMA) ---
+void sendLoRaBinary(uint8_t type); // İleri deklarasyon
+
 class MyRxCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-        // String belasını tamamen bıraktık, doğrudan donanıma gelen ham byte'ları alıyoruz!
         uint8_t* rxData = pCharacteristic->getData();
         size_t rxLength = pCharacteristic->getLength();
 
         if (rxLength > 0) {
-            // 1. Ham Binary GPS Paketi mi? (Uzunluk 12 ve Header 0x01 ise)
+            // 1. Manuel SOS Yakalama & LoRa'ya Yönlendirme (Yutulma Fix'i)
             if (rxLength == 12 && rxData[0] == 0x01) {
+                uint8_t afet_tipi = rxData[1];
                 memcpy(&son_lat, rxData + 2, 4);
                 memcpy(&son_lon, rxData + 6, 4);
+                son_saglik_durumu = rxData[10];
+                son_kisi_sayisi = rxData[11];
                 Serial.printf("📍 [GPS BİNARY] Konum güncellendi: Lat=%.4f, Lon=%.4f\n", son_lat, son_lon);
+                Serial.printf("🩺 [BİLGİ] Sağlık: %d, Kişi: %d\n", son_saglik_durumu, son_kisi_sayisi);
+                sendLoRaBinary(afet_tipi);
+                Serial.println("📡 [LORA] Telefondan gelen Manuel SOS Mesh ağına fırlatıldı!");
             } 
             else {
-                // Eski string "LOC|" formatı gelme ihtimaline karşı (Geriye Dönük Uyum)
                 String rxString = "";
                 for (int i = 0; i < rxLength; i++) rxString += (char)rxData[i];
 
@@ -130,9 +158,7 @@ class MyRxCallbacks : public BLECharacteristicCallbacks {
                     }
                 }
                 else {
-                    // Standart 1 Byte Komutlar
                     uint8_t cmd = rxData[0];
-                    
                     if (cmd == 0x99) {
                         yangin_alarm_bitis = 0;
                         ledcWrite(BUZZER_PIN, 0);
@@ -164,23 +190,100 @@ void sendBleCommand(uint8_t command) {
     }
 }
 
-// LoRa Üzerinden Hafızalı (Konumlu) Binary Paket Gönderme
-void sendLoRaBinary(uint8_t type) {
-    uint8_t packet[12] = {0}; 
-    packet[0] = 0x01;  // Header
-    packet[1] = type;  // Acil Durum Tipi
-    
-    // Float değerleri (4 Byte) doğrudan byte dizisine yapıştır
-    memcpy(&packet[2], &son_lat, sizeof(float));
-    memcpy(&packet[6], &son_lon, sizeof(float));
+// =========================================================================
+// MESH YARDIMCI FONKSİYONLARI
+// =========================================================================
+bool isMessageSeen(uint8_t msg_id) {
+    for (int i = 0; i < 10; i++) {
+        if (msg_cache[i] == msg_id) return true;
+    }
+    return false;
+}
 
-    // 🛠️ YAMA 2: Otonom sinyallerde kişi sayısını varsayılan 1 yap (AFAD Önceliği)
-    packet[11] = 1;
+void addToCache(uint8_t msg_id) {
+    msg_cache[cache_index] = msg_id;
+    cache_index = (cache_index + 1) % 10;
+}
+
+// =========================================================================
+// LORA MESH GÖNDERİM FONKSİYONU (16 BYTE)
+// =========================================================================
+void sendLoRaBinary(uint8_t type) {
+    uint8_t packet[16] = {0}; 
+    packet[0] = 0x01;              // Header
+    packet[1] = type;              // Acil Durum Tipi
+    packet[2] = NODE_ID;           // Gönderen ID
+    packet[3] = GATEWAY_ID;        // Hedef ID
     
-    // Kilit al ve gönder
+    global_msg_id++;
+    packet[4] = global_msg_id;     // Mesaj Sıra No
+    packet[5] = MAX_TTL;           // Başlangıç TTL'si (2)
+    
+    memcpy(&packet[6], &son_lat, sizeof(float));
+    memcpy(&packet[10], &son_lon, sizeof(float));
+    packet[14] = son_kisi_sayisi;                
+    packet[15] = son_saglik_durumu;
+    addToCache(global_msg_id);
+
     if (xSemaphoreTake(lora_mutex, portMAX_DELAY)) {
-        Serial2.write(packet, 12);
+        Serial2.write(packet, 16);
         xSemaphoreGive(lora_mutex);
+    }
+    Serial.printf("📡 [LORA TX] Mesh Paketi Fırlatıldı! Type: %x, MsgID: %d, TTL: %d\n", type, global_msg_id, MAX_TTL);
+}
+
+// =========================================================================
+// CORE 1: LORA MESH DİNLEME VE RÖLE GÖREVİ
+// =========================================================================
+void LoRaMeshTask(void* pvParameters) {
+    uint8_t rxBuffer[16];
+    int rxIndex = 0;
+
+    for (;;) {
+        if (Serial2.available()) {
+            uint8_t b = Serial2.read();
+
+            if (rxIndex == 0 && b != 0x01) continue;
+
+            rxBuffer[rxIndex++] = b;
+
+            if (rxIndex >= 16) {
+                rxIndex = 0;
+
+                uint8_t p_header = rxBuffer[0];
+                uint8_t p_type   = rxBuffer[1];
+                uint8_t p_sender = rxBuffer[2];
+                uint8_t p_target = rxBuffer[3];
+                uint8_t p_msg_id = rxBuffer[4];
+                uint8_t p_ttl    = rxBuffer[5];
+
+                if (p_sender == NODE_ID) continue; 
+                if (isMessageSeen(p_msg_id)) continue; 
+
+                addToCache(p_msg_id);
+
+                if (p_target == NODE_ID) {
+                    Serial.printf("📥 [LORA RX] Bana mesaj geldi! Type: %x\n", p_type);
+                } 
+                else {
+                    if (p_ttl > 0) {
+                        p_ttl--; 
+                        rxBuffer[5] = p_ttl; 
+
+                        vTaskDelay(random(50, 200) / portTICK_PERIOD_MS);
+
+                        if (xSemaphoreTake(lora_mutex, portMAX_DELAY)) {
+                            Serial2.write(rxBuffer, 16);
+                            xSemaphoreGive(lora_mutex);
+                        }
+                        Serial.printf("♻️ [MESH RÖLE] Paket Sektirildi! Kalan TTL: %d, MsgID: %d, Kimden: %d\n", p_ttl, p_msg_id, p_sender);
+                    } else {
+                        Serial.printf("🛑 [MESH DROP] TTL Bitti, paket düştü. MsgID: %d\n", p_msg_id);
+                    }
+                }
+            }
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS); 
     }
 }
 
@@ -239,7 +342,6 @@ void yanginInference(float temp, float hum, float gas, float pres) {
     if (!xSemaphoreTake(fire_index_mutex, 0)) return;
 
     if (fire_feature_index >= FIRE_INPUT_SIZE) {
-        // 🛠️ YAMA 3: Performans için memmove kullanımı (Kayar Pencere)
         memmove(fire_features, fire_features + 4, (FIRE_INPUT_SIZE - 4) * sizeof(float));
         fire_feature_index = FIRE_INPUT_SIZE - 4; 
     }
@@ -276,17 +378,12 @@ void yanginInference(float temp, float hum, float gas, float pres) {
     if ((conf_fire > 0.80) && threshold_fire) {
         ledcWrite(BUZZER_PIN, sesSeviyesi);
         sendBleCommand(0x0C); 
-        Serial.println("🚨 [YANGIN] YANGIN ALGILANDI!");
+        Serial.println("🚨 [YANGIN] YANGIN ALGILANDI!"); 
         yangin_alarm_bitis = millis() + 30000;
     } else if ((conf_air > 0.70) || threshold_aq_bad) {
         sendBleCommand(0x0E);
-        Serial.println("⚠️ [HAVA] Hava kalitesi kötü!");
     } else if ((conf_hum > 0.70) || threshold_humidity) {
         sendBleCommand(0x0F);
-        Serial.println("💧 [NEM] Yüksek nem!");
-    } else if (conf_fire > 0.50 && !threshold_fire) {
-        sendBleCommand(0x10);
-        Serial.println("❓ [BELİRSİZ] Kullanıcı onayı gerekiyor.");
     }
 }
 
@@ -360,20 +457,21 @@ void AiAndSensorTask(void* pvParameters) {
                             ledcWrite(BUZZER_PIN, sesSeviyesi);
                             sendBleCommand(0x0A);
                             Serial.println("🚨 [DEPREM] DEPREM ALGILANDI!");
+                            
+                            // YENİ FİX: Cihaz kıyameti hafızasına kazıdı!
+                            gercek_bir_deprem_yasandi_mi = true;
+                            
                             deprem_kalkani_aktif = true;
                             deprem_kalkani_bitis = su_an + 30000;
                         } else if (ai_sonucu > 0.50 && ai_sonucu <= 0.70 && gercek_sarsinti) {
                             sendBleCommand(0x0B);
-                            Serial.println("⚠️ [MUHTEMEL DEPREM] %50-70 arası, onay bekleniyor.");
                         } else if (anomali_seviyesi > 20.0 && gercek_sarsinti) {
                             sendBleCommand(0x0B);
-                            Serial.println("⚠️ [ANOMALİ] Tanımlanamayan sarsıntı!");
                         }
                     } else {
                         if (su_an > deprem_kalkani_bitis) {
                             deprem_kalkani_aktif = false;
                             ledcWrite(BUZZER_PIN, 0);
-                            Serial.println("🟢 Deprem süreci bitti, normale dönüldü.");
                         }
                     }
                 }
@@ -390,11 +488,26 @@ void AiAndSensorTask(void* pvParameters) {
                     sonVurusZamani = su_an;
                     Serial.printf("🎯 Vuruş: %d/4\n", vurusSayaci);
                     if (vurusSayaci >= 4) {
+                        // Uygulamaya her zaman haber ver
                         sendBleCommand(0x0D);
-                        sendLoRaBinary(0x04);
-                        vurusSayaci = 0;
-                        ledcWrite(BUZZER_PIN, 50); vTaskDelay(150 / portTICK_PERIOD_MS); ledcWrite(BUZZER_PIN, 0);
-                    }
+                        
+                        // 2. 🔥 YENİ FİX: Otonom Gönderim ŞARTLARI
+    if (gercek_bir_deprem_yasandi_mi) {
+        if (!deviceConnected) {
+            // Telefon YOK! Adamın tek umudu biziz, paketi ateşle!
+            sendLoRaBinary(0x04);
+            Serial.println("📡 [OTONOM] Telefon KOPUK! Ritmik vuruş Karargaha fırlatıldı!");
+        } else {
+            // Telefon BAĞLI! İşi ona bırak, o bize Manuel SOS atacak, ağı çiftleme.
+            Serial.println("ℹ️ [SİSTEM] Telefon bağlı. LoRa gönderimi uygulamaya bırakıldı.");
+        }
+    } else {
+        Serial.println("ℹ️ [SİSTEM] Vuruş algılandı ama deprem kaydı yok. İptal.");
+    }
+
+    vurusSayaci = 0;
+    ledcWrite(BUZZER_PIN, 50); vTaskDelay(150 / portTICK_PERIOD_MS); ledcWrite(BUZZER_PIN, 0);
+}
                 }
             }
             if (millis() - sonVurusZamani > 4000) vurusSayaci = 0;
@@ -528,12 +641,12 @@ void setup() {
 
     xTaskCreatePinnedToCore(AiAndSensorTask, "AiAndSensorTask", 16384, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(FireSensorTask,  "FireSensorTask",  16384, NULL, 1, NULL, 1);
+    
+    xTaskCreatePinnedToCore(LoRaMeshTask,    "LoRaMeshTask",    4096,  NULL, 2, NULL, 1);
 
-    Serial.println("\n🚀 RESCUELINK V4.6 (Tam Final & Binary Korumalı) YÜKLENDİ!");
+    Serial.println("\n🚀 RESCUELINK V5.0 FINAL (Mesh Röle + Otonom Kalkanı + BLE GPS Fix) YÜKLENDİ!");
 }
 
-// =========================================================================
-// ANA DÖNGÜ (Heartbeat / Yaşam Sinyali)
 // =========================================================================
 void loop() {
     static unsigned long last_heartbeat = 0;
@@ -543,6 +656,5 @@ void loop() {
         sendBleCommand(0x12);
         sendLoRaBinary(0x12);
     }
-
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 }

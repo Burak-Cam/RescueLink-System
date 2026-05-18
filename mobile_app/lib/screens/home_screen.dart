@@ -14,8 +14,8 @@ import '../services/gps_service.dart';
 import '../services/sos_status_service.dart';
 import '../services/locale_service.dart';
 import '../services/whistle_service.dart';
-import '../services/sms_queue_service.dart';
 import '../services/map_service.dart';
+import '../services/ota_service.dart';
 import '../theme/app_theme.dart';
 import 'auto_connect_screen.dart';
 import 'profile_screen.dart';
@@ -54,6 +54,7 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription? _messagesSub;
   StreamSubscription? _ackSub;
   StreamSubscription? _systemEventSub;
+  StreamSubscription? _otaUpdateSub;
 
   @override
   void initState() {
@@ -63,6 +64,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _listenForAcks();
     _listenForSystemEvents();
     _listenForTelemetry();
+    _listenForOtaUpdates();
     _checkCityAndPromptMap();
     
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -205,6 +207,16 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  void _listenForOtaUpdates() {
+    final ble = context.read<BleService>();
+    final locale = context.read<LocaleService>();
+    _otaUpdateSub = ble.otaUpdateEventStream.listen((event) {
+      if (mounted) {
+        _showOtaPrompt(locale, event.version);
+      }
+    });
+  }
+
   void _listenForSystemEvents() {
     final ble = context.read<BleService>();
     final gps = context.read<GpsService>();
@@ -241,7 +253,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _pageController.animateToPage(0, duration: const Duration(milliseconds: 500), curve: Curves.easeInOut);
           }
           gps.forceEmergencyWake();
-          sosStatus.triggerAiEmergency();
+          sosStatus.triggerAiEmergency(type: "EARTHQUAKE");
           break;
         case BleSystemEvent.anomaly:
           _showAnomalyPrompt(locale);
@@ -269,13 +281,19 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           );
           break;
-        case BleSystemEvent.uncertain:
-          _showDeadMansSwitchDialog(locale, "UNCERTAIN");
+        case BleSystemEvent.gasLeak:
+          setState(() { _isGasActive = true; });
+          if (_pageController.hasClients) {
+            _pageController.animateToPage(1, duration: const Duration(milliseconds: 500), curve: Curves.easeInOut);
+          }
+          _showDeadMansSwitchDialog(locale, "GAS_LEAK");
           break;
-        case BleSystemEvent.powerLost:
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(locale.t('power_lost_msg')), duration: const Duration(seconds: 5)),
-          );
+        case BleSystemEvent.criticalTemperature:
+          setState(() { _isFireActive = true; });
+          if (_pageController.hasClients) {
+            _pageController.animateToPage(1, duration: const Duration(milliseconds: 500), curve: Curves.easeInOut);
+          }
+          _showDeadMansSwitchDialog(locale, "CRITICAL_TEMP");
           break;
         case BleSystemEvent.rhythmicTapping:
           final storage = context.read<StorageService>();
@@ -293,24 +311,118 @@ class _HomeScreenState extends State<HomeScreen> {
             if (kDebugMode) print("Tapping ignored: No earthquake occurred.");
           }
           break;
+        default:
+          break;
       }
     });
   }
 
   void _showAnomalyPrompt(LocaleService locale) {
-    final sosStatus = context.read<SosStatusService>();
+    final ble = context.read<BleService>();
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF2B2B2B),
-        title: Text(locale.t('anomaly_title'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
-        content: Text(locale.t('anomaly_desc')),
+        title: Text(locale.isEnglish ? "Did you feel shaking?" : "Sarsıntı hissettiniz mi?", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+        content: Text(locale.isEnglish ? "The AI detected an anomaly. Was it an earthquake or just noise?" : "Yapay zeka bir anomali saptadı. Bu bir deprem miydi, yoksa sadece gürültü/hata mı?"),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: Text(locale.t('no'), style: const TextStyle(color: Colors.white54))),
-          ElevatedButton(onPressed: () { Navigator.pop(context); sosStatus.triggerAiEmergency(); }, child: Text(locale.t('yes'))),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              ble.writeText("LABEL|noise");
+            },
+            child: Text(locale.isEnglish ? "No (Noise/Error)" : "Hayır (Gürültü/Hata)", style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              ble.writeText("LABEL|deprem");
+            },
+            child: Text(locale.isEnglish ? "Yes (Earthquake)" : "Evet (Deprem)"),
+          ),
         ],
       ),
     );
+  }
+
+  void _showOtaPrompt(LocaleService locale, String version) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF2B2B2B),
+        title: Text(locale.isEnglish ? "Firmware Update Available" : "Yeni Güncelleme Var!", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+        content: Text(locale.isEnglish ? "A new version ($version) for the Edge Node is available. How would you like to update?" : "Edge Node için yeni bir sürüm ($version) mevcut. Nasıl güncellemek istersiniz?"),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              context.read<BleService>().writeText("OTA|hayir");
+            },
+            child: Text(locale.isEnglish ? "Cancel" : "İptal", style: const TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
+            onPressed: () {
+              Navigator.pop(context);
+              _startBleOtaProcess(locale);
+            },
+            child: Text(locale.isEnglish ? "Update via BLE (Offline)" : "BLE ile Güncelle (Offline)"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _startBleOtaProcess(LocaleService locale) async {
+    final otaService = context.read<OtaService>();
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Consumer<OtaService>(
+        builder: (context, ota, child) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2B2B2B),
+            title: Text(locale.isEnglish ? "Flashing Firmware..." : "Firmware Yükleniyor...", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (ota.error != null)
+                  Text(ota.error!, style: const TextStyle(color: Color(0xFFD32F2F)))
+                else ...[
+                  LinearProgressIndicator(
+                    value: ota.progress,
+                    backgroundColor: Colors.white10,
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF2E7D32)),
+                  ),
+                  const SizedBox(height: 16),
+                  Text("${(ota.progress * 100).toStringAsFixed(1)}%", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+                  const SizedBox(height: 8),
+                  Text(
+                    locale.isEnglish ? "Please keep the app open and near the device." : "Lütfen uygulamayı açık tutun ve cihaza yakın durun.",
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                ]
+              ],
+            ),
+            actions: [
+              if (!ota.isFlashing)
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(locale.isEnglish ? "Close" : "Kapat", style: const TextStyle(color: Colors.white)),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+
+    // In a real scenario, fetch this URL from your API/GitHub releases. 
+    // For now, using a placeholder/hardcoded URL to match the design.
+    await otaService.startBleOta();
   }
 
   void _showDeadMansSwitchDialog(LocaleService locale, String type) {
@@ -337,31 +449,29 @@ class _HomeScreenState extends State<HomeScreen> {
           ? "Critical environmental danger detected ($type). If you do not respond in 60 seconds, an auto-SOS will be dispatched." 
           : "Kritik çevresel tehlike algılandı ($type). 60 saniye içinde yanıt vermezseniz otomatik SOS gönderilecektir."),
         actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
-            onPressed: () { 
-              switchTimer?.cancel();
-              whistle.stopWhistle(); 
-              ble.sendSilenceCommand(); 
-              setState(() { 
-                _isFireActive = false; 
-                _isGasActive = false; 
-                _activeSosType = ""; 
-              });
-              Navigator.pop(context); 
-            }, 
-            child: Text(locale.isEnglish ? "SILENCE (I'm Safe)" : "SUSTUR (Güvendeyim)")
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
-            onPressed: () { 
-              switchTimer?.cancel();
-              Navigator.pop(context); 
-              gps.forceEmergencyWake();
-              sosStatus.triggerAiEmergency();
-              _sendSos(type: type); 
-            }, 
-            child: const Text("SEND SOS NOW")
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2E7D32),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              onPressed: () { 
+                switchTimer?.cancel();
+                whistle.stopWhistle(); 
+                ble.sendSilenceCommand(); 
+                setState(() { 
+                  _isFireActive = false; 
+                  _isGasActive = false; 
+                  _activeSosType = ""; 
+                });
+                Navigator.pop(context); 
+              }, 
+              child: Text(
+                locale.isEnglish ? "SILENCE (I'm Conscious)" : "SUSTUR (Bilincim Açık)",
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ),
           ),
         ],
       ),
@@ -383,7 +493,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final gps = context.read<GpsService>();
     final sosStatus = context.read<SosStatusService>();
     final locale = context.read<LocaleService>();
-    final smsQueue = context.read<SmsQueueService>();
 
     setState(() { _activeSosType = type; });
 
@@ -434,8 +543,6 @@ class _HomeScreenState extends State<HomeScreen> {
       String dangerText = useTr ? "$type TEHLİKESİ BİLDİRİLDİ" : "$type DANGER REPORTED";
       historyString = "SOS|$type|${storage.getFirstName()} ${storage.getLastName()}|$coords|$dangerText";
     }
-
-    smsQueue.queueSos(historyString);
 
     Uint8List payload;
     if (storage.isDevMode() && storage.useStringPayload()) {
@@ -852,30 +959,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildSosButton(BleService ble, SosStatusService sosStatus, LocaleService locale, {String type = "EARTHQUAKE", Color color = AppTheme.primaryRed, String? label}) {
     bool isConnected = ble.status == BleConnectionStatus.connected;
-    bool isCooldown = sosStatus.isCooldownActive;
+    bool isCooldown = sosStatus.isLockedFor(type);
     bool isSending = sosStatus.state == SosProcessState.sending || sosStatus.state == SosProcessState.queuedOffline;
     
-    final storage = context.read<StorageService>();
-    bool isLockedByType = false;
-    
-    if (!storage.isDevMode()) {
-      if (type == "FIRE" && !_isFireActive) isLockedByType = true;
-      if (type == "GAS" && !_isGasActive) isLockedByType = true;
-    }
-
-    bool isDisabled = isCooldown || isSending || isLockedByType;
+    bool isDisabled = isCooldown || isSending;
     String buttonText = label ?? locale.t('sos_button').toUpperCase();
     
+    String lockedText = locale.t('locked').toUpperCase();
+    if ((type == "EARTHQUAKE" || type == "TAPPING") && isCooldown && sosStatus.isInsideBlockWindow) {
+      lockedText = "${locale.t('locked')} (${(sosStatus.blockRemainingSeconds ~/ 60).toString().padLeft(2, '0')}:${(sosStatus.blockRemainingSeconds % 60).toString().padLeft(2, '0')})";
+    }
+
     return ElevatedButton.icon(
-      icon: Icon(isLockedByType ? Icons.lock_outline : (isCooldown ? Icons.lock : Icons.warning_amber_rounded), size: 32),
+      icon: Icon(isCooldown ? Icons.lock : Icons.warning_amber_rounded, size: 32),
       label: Text(
-        isLockedByType 
-          ? locale.t('locked').toUpperCase()
-          : (isCooldown 
-              ? (sosStatus.isInsideBlockWindow 
-                  ? "${locale.t('locked')} (${(sosStatus.blockRemainingSeconds ~/ 60).toString().padLeft(2, '0')}:${(sosStatus.blockRemainingSeconds % 60).toString().padLeft(2, '0')})"
-                  : locale.t('locked').toUpperCase())
-              : buttonText),
+        isCooldown ? lockedText : buttonText,
         textAlign: TextAlign.center,
         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 1),
       ),

@@ -24,6 +24,16 @@ class SosStatusService extends ChangeNotifier {
   bool _aiEmergencyOverride = false;
   Timer? _aiOverrideTimer;
 
+  bool _fireAiUnlocked = false;
+  Timer? _fireUnlockTimer;
+  DateTime? _lastFireSosTime;
+
+  bool _gasAiUnlocked = false;
+  Timer? _gasUnlockTimer;
+  DateTime? _lastGasSosTime;
+  
+  String _currentSendingType = "EARTHQUAKE";
+
   final StorageService _storage;
 
   SosStatusService(this._storage) {
@@ -46,6 +56,22 @@ class SosStatusService extends ChangeNotifier {
     return true; // Varsayılan olarak hep kilitli
   }
 
+  bool isLockedFor(String type) {
+    if (_storage.isDevMode()) return false;
+    
+    if (type == "FIRE" || type == "CRITICAL_TEMP") {
+      if (_lastFireSosTime != null && DateTime.now().difference(_lastFireSosTime!).inMinutes < 15) return true; // Cooldown
+      return !_fireAiUnlocked; // Not unlocked by AI yet
+    } else if (type == "GAS" || type == "GAS_LEAK") {
+      if (_lastGasSosTime != null && DateTime.now().difference(_lastGasSosTime!).inMinutes < 15) return true; // Cooldown
+      return !_gasAiUnlocked; // Not unlocked by AI yet
+    }
+    
+    // Default Earthquake/Tapping
+    if (_aiEmergencyOverride) return false;
+    return true;
+  }
+
   bool get isInsideBlockWindow {
     if (_lastSosTimestamp == null) return false;
     final diff = DateTime.now().difference(_lastSosTimestamp!);
@@ -59,17 +85,24 @@ class SosStatusService extends ChangeNotifier {
     return remaining > 0 ? remaining : 0;
   }
 
-  void triggerAiEmergency({Duration duration = const Duration(minutes: 15)}) {
-    // Rule: Deprem/Acil durum sinyali gelince kilit KOŞULSUZ ŞARTSIZ kırılır.
-    if (kDebugMode) print('🚨 SOS_STATUS: AI Kilidi Kırdı! SOS Aktif.');
-    _aiOverrideTimer?.cancel();
-    _aiEmergencyOverride = true;
-    notifyListeners();
-
-    _aiOverrideTimer = Timer(duration, () {
-      _aiEmergencyOverride = false;
+  void triggerAiEmergency({String type = "EARTHQUAKE", Duration duration = const Duration(minutes: 15)}) {
+    if (kDebugMode) print('🚨 SOS_STATUS: AI Kilidi Kırdı! SOS Aktif ($type).');
+    if (type == "FIRE" || type == "CRITICAL_TEMP") {
+      _fireUnlockTimer?.cancel();
+      _fireAiUnlocked = true;
       notifyListeners();
-    });
+      _fireUnlockTimer = Timer(duration, () { _fireAiUnlocked = false; notifyListeners(); });
+    } else if (type == "GAS" || type == "GAS_LEAK") {
+      _gasUnlockTimer?.cancel();
+      _gasAiUnlocked = true;
+      notifyListeners();
+      _gasUnlockTimer = Timer(duration, () { _gasAiUnlocked = false; notifyListeners(); });
+    } else {
+      _aiOverrideTimer?.cancel();
+      _aiEmergencyOverride = true;
+      notifyListeners();
+      _aiOverrideTimer = Timer(duration, () { _aiEmergencyOverride = false; notifyListeners(); });
+    }
   }
 
   Future<void> setStatus(SosProcessState newState, {String? error}) async {
@@ -77,14 +110,24 @@ class SosStatusService extends ChangeNotifier {
     _errorMessage = error;
 
     if (newState == SosProcessState.deliveredToHq || newState == SosProcessState.sentToNode) {
-      _aiEmergencyOverride = false;
-      _aiOverrideTimer?.cancel();
-
-      _lastSosTimestamp = DateTime.now();
-      await _storage.saveLastSosTimestamp(_lastSosTimestamp!);
-      
-      if (newState == SosProcessState.deliveredToHq) _hqConfirmed = true;
-      _startCooldown();
+      if (_currentSendingType == "FIRE" || _currentSendingType == "CRITICAL_TEMP") {
+        _fireAiUnlocked = false;
+        _fireUnlockTimer?.cancel();
+        _lastFireSosTime = DateTime.now();
+        if (newState == SosProcessState.deliveredToHq) _hqConfirmed = true;
+      } else if (_currentSendingType == "GAS" || _currentSendingType == "GAS_LEAK") {
+        _gasAiUnlocked = false;
+        _gasUnlockTimer?.cancel();
+        _lastGasSosTime = DateTime.now();
+        if (newState == SosProcessState.deliveredToHq) _hqConfirmed = true;
+      } else {
+        _aiEmergencyOverride = false;
+        _aiOverrideTimer?.cancel();
+        _lastSosTimestamp = DateTime.now();
+        await _storage.saveLastSosTimestamp(_lastSosTimestamp!);
+        if (newState == SosProcessState.deliveredToHq) _hqConfirmed = true;
+        _startCooldown();
+      }
     } else if (newState == SosProcessState.idle) {
       _checkCooldown();
     }
@@ -94,17 +137,24 @@ class SosStatusService extends ChangeNotifier {
   void resetCooldown() {
     _cooldownTimer?.cancel();
     _aiOverrideTimer?.cancel();
+    _fireUnlockTimer?.cancel();
+    _gasUnlockTimer?.cancel();
     _remainingSeconds = 0;
     _state = SosProcessState.idle;
     _lastSosTimestamp = null;
+    _lastFireSosTime = null;
+    _lastGasSosTime = null;
     _hqConfirmed = false;
     _errorMessage = null;
     _aiEmergencyOverride = false;
+    _fireAiUnlocked = false;
+    _gasAiUnlocked = false;
     _storage.clearLastSosTimestamp();
     notifyListeners();
   }
 
-  void startSending() {
+  void startSending({String type = "EARTHQUAKE"}) {
+    _currentSendingType = type;
     _state = SosProcessState.sending;
     _hqConfirmed = false;
     _errorMessage = null;
