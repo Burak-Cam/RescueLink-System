@@ -1,16 +1,18 @@
-# RescueLink Session Checkpoint: SIL Simulations & Test Suite Recovery
-**Timestamp:** 2026-05-16
-**Status:** V1.7.0 Stable - Ready for Production Build & Documentation
+# RescueLink Session Checkpoint: Documentation & Feature Verification
+**Timestamp:** 2026-05-20
+**Status:** V1.7.0 Stable - Reporting Phase Active
 
 ### Today's Achievements:
-1. **Version Sync & Test Recovery:** Updated `pubspec.yaml` to 1.7.0+1 to match documentation. Replaced failing default Flutter widget tests with a functioning dependency-injected smoke test.
-2. **Software-in-the-Loop (SIL) Simulations:** Created robust Dart-based mathematical models in `test/simulations/` to generate quantitative data for the IEEE paper and project report.
-   - **Power Efficiency:** Demonstrated a 4.9x battery extension using the Accelerometer-Triggered GPS architecture.
-   - **Anti-Spam:** Proved the 15-minute cooldown reduces LoRa airtime consumption by 99.1%.
-   - **BLE Reliability:** Simulated a 60% RF drop environment, proving the Auto-Recovery queue guarantees 100% packet delivery.
-3. **Report Generation:** Exported all SIL data to CSV format (`output_data/`) and generated a comprehensive `IEEE_SIMULATION_REPORT.md` to guide the academic writing and defense.
+1. **Documentation Review:** Verified and refined the Abstract, Introduction, Related Work, and Methodology sections. Ensured alignment between academic tone and technical implementation.
+2. **Feature Verification:** Confirmed the technical logic for the **Offline Micro-Map Caching (2km radius)**. Verified that the `MapService` uses a Slippy Map XYZ math engine to pre-download Z15-17 tiles from OSM to local storage.
+3. **Architecture Mapping:** Validated the dual-core task isolation (Core 0: Seismic/Taps, Core 1: Environmental/AI) and the 16-byte optimized binary protocol for the report.
+4. **Anti-Spam Logic:** Confirmed the 15-minute cooldown (Smart Lock) implementation for reporting as a key success criterion.
 
-### Next Steps (Pending Hardware/Cross-Repo Access):
-1. **Gateway Verification (RPi4):** Waiting for access to the Raspberry Pi 4 Python scripts. Need to verify that the RPi4 correctly parses the 11-byte BLE SOS packets forwarded by the ESP32 (Endianness and struct alignment checks).
-2. **Physical 24-Hour Rubble Simulation:** Implement a background CSV logger in the app to record empirical battery drain and BLE reconnection metrics during a real-world physical test.
-3. **Production Build:** Generate the V1.7.0 release APK.
+### Next Steps (Documentation Phase):
+1. **Section 4: Experimental Results:** Transform SIL simulation data (from `test/simulations/`) into formal report text and tables.
+   - Power Efficiency (4.9x extension).
+   - Anti-Spam (%99.1 reduction).
+   - BLE Reliability (100% delivery under 60% drop).
+2. **Section 5: Discussion:** Interpret RF propagation and edge cases.
+3. **Gateway Verification:** (Pending RPi5 script access) final packet parsing check.
+
