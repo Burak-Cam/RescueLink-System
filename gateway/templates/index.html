@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="tr" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RescueLink - Afet Karargahı</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background-color: #121212; }
+        #map { flex-grow: 1; width: 100%; }
+        .navbar-brand { font-weight: 800; letter-spacing: 2px; color: #ff4757 !important; }
+        .node-panel { height: 100%; overflow-y: auto; border-left: 2px solid #333; background-color: #1e1e1e; }
+        
+        .custom-div-icon { background: transparent; border: none; }
+        .marker-pin {
+            width: 40px; height: 40px; border-radius: 50% 50% 50% 0;
+            position: absolute; transform: rotate(-45deg); display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+        .marker-icon { transform: rotate(45deg); color: white; font-size: 16px; }
+        
+        /* 🚨 PROTOKOL RENK VE İKON ÖZELLEŞTİRMELERİ */
+        .marker-pin.sos { background: #e74c3c; box-shadow: 0 0 15px #e74c3c; animation: pulse-sos 1.2s infinite; }
+        .marker-pin.yangin { background: #e67e22; box-shadow: 0 0 15px #e67e22; animation: pulse-yangin 1.2s infinite; }
+        .marker-pin.gaz { background: #9b59b6; box-shadow: 0 0 15px #9b59b6; animation: pulse-gaz 1.2s infinite; }
+        .marker-pin.normal { background: #2ecc71; }
+        
+        /* 🏥 TRİAJ (ROZET) TASARIMLARI */
+        .triage-badge {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #121212;
+            z-index: 10;
+        }
+        .triage-kirmizi { background-color: #ff3838; box-shadow: 0 0 10px #ff3838; animation: pulse-triage 1s infinite; }
+        .triage-sari { background-color: #f1c40f; box-shadow: 0 0 8px #f1c40f; }
+        
+        /* Animasyonlar */
+        @keyframes pulse-sos { 0% { transform: rotate(-45deg) scale(1); box-shadow: 0 0 5px #e74c3c; } 50% { transform: rotate(-45deg) scale(1.15); box-shadow: 0 0 20px #e74c3c; } 100% { transform: rotate(-45deg) scale(1); box-shadow: 0 0 5px #e74c3c; } }
+        @keyframes pulse-yangin { 0% { transform: rotate(-45deg) scale(1); box-shadow: 0 0 5px #e67e22; } 50% { transform: rotate(-45deg) scale(1.15); box-shadow: 0 0 20px #e67e22; } 100% { transform: rotate(-45deg) scale(1); box-shadow: 0 0 5px #e67e22; } }
+        @keyframes pulse-gaz { 0% { transform: rotate(-45deg) scale(1); box-shadow: 0 0 5px #9b59b6; } 50% { transform: rotate(-45deg) scale(1.15); box-shadow: 0 0 20px #9b59b6; } 100% { transform: rotate(-45deg) scale(1); box-shadow: 0 0 5px #9b59b6; } }
+        @keyframes pulse-triage { 0% { transform: scale(1); } 50% { transform: scale(1.4); } 100% { transform: scale(1); } }
+        
+        /* Log Listesi Stilleri */
+        .log-item { border-left: 4px solid #444; }
+        .log-item.emergency { border-left-color: #e74c3c; background-color: rgba(231, 76, 60, 0.05) !important; }
+        .log-item.normal { border-left-color: #2ecc71; }
+    </style>
+</head>
+<body>
+
+    <nav class="navbar navbar-dark bg-dark border-bottom border-secondary">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1"><i class="fa-solid fa-satellite-dish me-2"></i>RESCUELINK COMMAND CENTER</span>
+            <span class="badge bg-success" id="connection-status">Sistem Aktif</span>
+        </div>
+    </nav>
+
+    <div class="container-fluid h-100 p-0 d-flex">
+        <div id="map" class="h-100 w-100"></div>
+
+        <div id="node-details" class="node-panel p-4 d-none" style="width: 450px; min-width: 450px;">
+            <div class="d-flex justify-content-between align-items-start mb-3 border-bottom border-secondary pb-3">
+                <div>
+                    <h2 id="panel-node-name" class="text-info m-0 fw-bold">NODE</h2>
+                    <h5 id="panel-heartbeat" class="text-warning mt-2 fw-bold"><i class="fa-regular fa-clock me-2"></i>Bekleniyor...</h5>
+                </div>
+                <button type="button" class="btn-close btn-close-white" onclick="closePanel()"></button>
+            </div>
+            
+            <div class="alert alert-secondary py-3 border-secondary shadow-sm" id="panel-status">
+                Durum: Bekleniyor...
+            </div>
+
+            <h5 class="text-light mt-4 mb-3 border-bottom border-secondary pb-2"><i class="fa-solid fa-list-check me-2 text-info"></i>Geçmiş Olay Logları</h5>
+            <ul class="list-group list-group-flush" id="alarm-list"></ul>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        var map = L.map('map').setView([41.0082, 28.9784], 11);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; CARTO' }).addTo(map);
+
+        var markers = {}; 
+
+	// 🛠️ AKILLI İKON VE TRİAJ ROZETİ SEÇİCİ
+        function createIcon(type, saglikDurumu) {
+            let colorClass = "normal"; 
+            let iconHtml = "<i class='fa-solid fa-check marker-icon'></i>";
+            
+            // 1. Ana Afet İkonunu Belirle (VURUS/ENKAZ eklendi!)
+            if (type.includes("MANUEL SOS") || type.includes("DEPREM") || type.includes("VURUS") || type.includes("ENKAZ")) {
+                colorClass = "sos";
+                iconHtml = "<i class='fa-solid fa-exclamation marker-icon'></i>";
+            } else if (type.includes("YANGIN")) {
+                colorClass = "yangin";
+                iconHtml = "<i class='fa-solid fa-fire marker-icon'></i>";
+            } else if (type.includes("GAZ")) {
+                colorClass = "gaz";
+                iconHtml = "<i class='fa-solid fa-mask-ventilator marker-icon'></i>";
+            }
+            
+            // 2. Sağlık Durumuna Göre Triaj Rozetini (Badge) Belirle
+            let triageHtml = "";
+            if (saglikDurumu) {
+                if (saglikDurumu.includes("Ağır")) {
+                    triageHtml = "<div class='triage-badge triage-kirmizi'></div>"; 
+                } else if (saglikDurumu.includes("Hafif")) {
+                    triageHtml = "<div class='triage-badge triage-sari'></div>";   
+                }
+            }
+            
+            // 3. İkon ve Rozeti Birleştir
+            let finalHtml = `
+                <div style="position: relative; width: 40px; height: 40px;">
+                    <div class='marker-pin ${colorClass}'>${iconHtml}</div>
+                    ${triageHtml}
+                </div>
+            `;
+            
+            return L.divIcon({ className: 'custom-div-icon', html: finalHtml, iconSize: [40, 40], iconAnchor: [20, 40] });
+        }
+
+        function openPanel(cihaz) {
+            document.getElementById('node-details').classList.remove('d-none');
+            document.getElementById('panel-node-name').innerText = cihaz.isim || "Bilinmeyen Cihaz";
+            document.getElementById('panel-heartbeat').innerHTML = `<i class="fa-regular fa-clock me-2"></i>Son İletişim: ${cihaz.son_gorulme || 'Yok'}`;
+            
+            let isNormal = cihaz.durum.includes("SISTEM NORMAL");
+            let alertColor = isNormal ? "text-success" : "text-danger fw-bold";
+            let bgClass = isNormal ? "bg-dark" : "bg-danger bg-opacity-10 border-danger";
+            
+            document.getElementById('panel-status').className = `alert py-3 shadow-sm ${bgClass}`;
+            document.getElementById('panel-status').innerHTML = `
+                <h4 class="${alertColor} mb-3 border-bottom border-secondary pb-2"><i class="fa-solid fa-bell me-2"></i>${cihaz.durum}</h4>
+                <div class="text-light fs-6">
+                    <div class="mb-2"><i class="fa-solid fa-users me-2 text-info"></i><strong>Kişi Sayısı:</strong> <span class="badge bg-secondary fs-6">${cihaz.kisi}</span></div>
+                    <div class="mb-2"><i class="fa-solid fa-heart-pulse me-2 text-danger"></i><strong>Sağlık Durumu:</strong> <span class="badge ${cihaz.saglik.includes('Yaralı') ? 'bg-danger' : 'bg-success'} fs-6">${cihaz.saglik}</span></div>
+                </div>
+                <div class="text-muted mt-3 small text-end">Cihaz ID: ${cihaz.hex_id}</div>
+            `;
+            
+            fetch(`/api/node_detay/${cihaz.raw_id}`)
+                .then(res => res.json())
+                .then(tData => {
+                    const list = document.getElementById('alarm-list');
+                    list.innerHTML = ''; 
+                    tData.loglar.forEach(log => {
+                        let isLogNormal = log.olay.includes("SISTEM NORMAL");
+                        let logTypeClass = isLogNormal ? "normal" : "emergency";
+                        let textClass = isLogNormal ? "text-success" : "text-danger fw-bold";
+                        
+                        let li = document.createElement('li');
+                        li.className = `list-group-item bg-transparent text-light p-3 mb-2 rounded log-item ${logTypeClass}`;
+                        li.innerHTML = `
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="${textClass} fs-6">${log.olay}</span>
+                                <small class="text-muted"><i class="fa-regular fa-clock me-1"></i>${log.saat}</small>
+                            </div>
+                            <div class="small text-light opacity-75 mt-2">
+                                <i class="fa-solid fa-users text-info me-1"></i>${log.kisi} Kişi 
+                                <span class="mx-2">|</span> 
+                                <i class="fa-solid fa-notes-medical text-danger me-1"></i>${log.saglik}
+                            </div>
+                        `;
+                        list.appendChild(li);
+                    });
+                });
+        }
+
+        function closePanel() { document.getElementById('node-details').classList.add('d-none'); }
+
+        fetch('/api/harita_verisi')
+            .then(res => res.json())
+            .then(data => {
+                var bounds = [];
+                data.forEach(cihaz => {
+                    // DİKKAT: Artık createIcon fonksiyonuna cihaz.saglik bilgisini de yolluyoruz!
+                    let marker = L.marker([cihaz.lat, cihaz.lon], {icon: createIcon(cihaz.durum, cihaz.saglik)}).addTo(map);
+                    marker.on('click', () => openPanel(cihaz));
+                    markers[cihaz.raw_id] = marker;
+                    bounds.push([cihaz.lat, cihaz.lon]);
+                });
+                if(bounds.length > 0) map.fitBounds(bounds, {maxZoom: 12, padding: [50, 50]});
+            });
+
+        const socket = io();
+        socket.on('yeni_veri', function(msg) { location.reload(); });
+    </script>
+</body>
+</html>
