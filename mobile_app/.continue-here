@@ -1,18 +1,19 @@
-# RescueLink Session Checkpoint: Documentation & Feature Verification
-**Timestamp:** 2026-05-20
-**Status:** V1.7.0 Stable - Reporting Phase Active
+# RescueLink Session Checkpoint: Gateway Location Sync & Bug Fix Deferral
+**Timestamp:** 2026-05-27
+**Status:** V1.7.1 Deployed - Investigating GPS Race Condition
 
 ### Today's Achievements:
-1. **Documentation Review:** Verified and refined the Abstract, Introduction, Related Work, and Methodology sections. Ensured alignment between academic tone and technical implementation.
-2. **Feature Verification:** Confirmed the technical logic for the **Offline Micro-Map Caching (2km radius)**. Verified that the `MapService` uses a Slippy Map XYZ math engine to pre-download Z15-17 tiles from OSM to local storage.
-3. **Architecture Mapping:** Validated the dual-core task isolation (Core 0: Seismic/Taps, Core 1: Environmental/AI) and the 16-byte optimized binary protocol for the report.
-4. **Anti-Spam Logic:** Confirmed the 15-minute cooldown (Smart Lock) implementation for reporting as a key success criterion.
+1. **Simulation Data Sanitization:** Extracted raw CSV data from the IEEE simulation text outputs (`power_efficiency`, `anti_spam`, `ble_reliability`) into the `output_data/clean_csv/` folder to allow direct importing into Excel/MATLAB for charting.
+2. **UML Use Case Diagram:** Created the `RescueLink_UseCase_PlantUML.txt` diagram modeling the mobile app layer and saved it to the Desktop for the IEEE paper.
+3. **Gateway Location Sync (Partial):** Implemented the `0x13` location request listener and initial connection sync bridge in `main.dart` and `ble_service.dart`.
+4. **UI Terminology:** Updated localization strings across TR and EN to use user-friendly terms ("Cihaz/Device") instead of "Gateway" on the searching screens, while maintaining technical accuracy for the "Handed to Gateway" SOS delivery notifications.
+5. **Release Build:** Generated and exported `RescueLink_V1.7.1.apk` to the user's Desktop.
 
-### Next Steps (Documentation Phase):
-1. **Section 4: Experimental Results:** Transform SIL simulation data (from `test/simulations/`) into formal report text and tables.
-   - Power Efficiency (4.9x extension).
-   - Anti-Spam (%99.1 reduction).
-   - BLE Reliability (100% delivery under 60% drop).
-2. **Section 5: Discussion:** Interpret RF propagation and edge cases.
-3. **Gateway Verification:** (Pending RPi5 script access) final packet parsing check.
+### Known Issues / Bugs to Fix:
+1. **GPS Race Condition on 0x13 / Connection:** The newly implemented location sync fails because `GpsService` is queried for `hasFix` immediately upon connection or receiving `0x13`. If the GPS is in its sleep state (due to the accelerometer-triggered power-saving architecture), the app triggers a wake (`forceEmergencyWake`) but fails to asynchronously wait for the fix, resulting in the location never being transmitted to the gateway.
 
+### Next Steps for Next Session:
+1. **Fix GPS Race Condition:** Convert the `_sendLocation` function in `main.dart` to listen to the `GpsService` stream or use a `Future` to wait for a valid `Position` before sending the `LOC|lat|lon` string over BLE.
+2. **[Section 4] Formalize Experimental Results:** Create Markdown tables and draft academic text for the Power, Anti-Spam, and BLE reliability data (using `output_data/clean_csv/*.csv`).
+3. **[Section 5] Author Discussion:** Draft the interpretation of RF propagation trade-offs, battery constraints, and the ethical impact of the anti-spam algorithm.
+4. **Gateway Verification:** (Awaiting RPi4 Python codebase injection) Final packet parsing check.

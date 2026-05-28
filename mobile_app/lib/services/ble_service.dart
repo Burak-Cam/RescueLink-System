@@ -23,6 +23,7 @@ enum BleSystemEvent {
   gasLeak,
   heartbeatLost,
   heartbeatRestored,
+  locationRequest,
   otaReady,
   otaChunkAck,
   otaError,
@@ -290,7 +291,10 @@ class BleService extends ChangeNotifier {
 
         for (int byte in value) {
           switch (byte) {
-            case 0x06: _ackController.add(0x06); break;
+            case 0x06: 
+              _ackController.add(0x06); 
+              processedAsEvent = true;
+              break;
             case 0x0A: 
               if (kDebugMode) print('🔥 EARTHQUAKE DETECTED IN RAW BYTES!');
               _systemEventController.add(BleSystemEvent.earthquake); 
@@ -304,6 +308,7 @@ class BleService extends ChangeNotifier {
             case 0x10: _systemEventController.add(BleSystemEvent.gasLeak); processedAsEvent = true; break;
             case 0x11: _systemEventController.add(BleSystemEvent.criticalTemperature); processedAsEvent = true; break;
             case 0x12: processedAsEvent = true; break; // Heartbeat
+            case 0x13: _systemEventController.add(BleSystemEvent.locationRequest); processedAsEvent = true; break;
             case 0x20: _systemEventController.add(BleSystemEvent.otaReady); processedAsEvent = true; break;
             case 0x21: _systemEventController.add(BleSystemEvent.otaChunkAck); processedAsEvent = true; break;
             case 0x22: _systemEventController.add(BleSystemEvent.otaError); processedAsEvent = true; break;

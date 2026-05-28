@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -59,7 +60,7 @@ void main() async {
   );
 }
 
-class RescueLinkApp extends StatelessWidget {
+class RescueLinkApp extends StatefulWidget {
   final bool isProfileComplete;
   final bool autoConnected;
   const RescueLinkApp({
@@ -67,6 +68,62 @@ class RescueLinkApp extends StatelessWidget {
     required this.isProfileComplete,
     required this.autoConnected,
   });
+
+  @override
+  State<RescueLinkApp> createState() => _RescueLinkAppState();
+}
+
+class _RescueLinkAppState extends State<RescueLinkApp> {
+  StreamSubscription? _bleEventSub;
+  bool _hasSentLocationThisSession = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _setupLocationBridge();
+    });
+  }
+
+  void _setupLocationBridge() {
+    final bleService = context.read<BleService>();
+    final gpsService = context.read<GpsService>();
+
+    _bleEventSub = bleService.systemEventStream.listen((event) {
+      if (event == BleSystemEvent.locationRequest) {
+        _sendLocation(bleService, gpsService);
+      }
+    });
+
+    bleService.addListener(() {
+      if (bleService.status == BleConnectionStatus.connected) {
+         if (!_hasSentLocationThisSession) {
+           _sendLocation(bleService, gpsService);
+           _hasSentLocationThisSession = true;
+         }
+      } else if (bleService.status == BleConnectionStatus.disconnected) {
+         _hasSentLocationThisSession = false; // Reset for next connection
+      }
+    });
+  }
+
+  void _sendLocation(BleService ble, GpsService gps) {
+    if (gps.hasFix) {
+      final lat = gps.currentPosition!.latitude.toStringAsFixed(4);
+      final lon = gps.currentPosition!.longitude.toStringAsFixed(4);
+      ble.writeText("LOC|$lat|$lon", isHighPriority: true);
+    } else {
+      // If no fix, we might need to wake GPS and wait, but for now send what we have or nothing
+      gps.forceEmergencyWake();
+      // Could wait for a fix here, but keep it simple first
+    }
+  }
+
+  @override
+  void dispose() {
+    _bleEventSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -79,9 +136,9 @@ class RescueLinkApp extends StatelessWidget {
         });
 
         Widget initialScreen;
-        if (!isProfileComplete) {
+        if (!widget.isProfileComplete) {
           initialScreen = const OnboardingScreen();
-        } else if (autoConnected) {
+        } else if (widget.autoConnected) {
           initialScreen = const HomeScreen();
         } else {
           initialScreen = const AutoConnectScreen();

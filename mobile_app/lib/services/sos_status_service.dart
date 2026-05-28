@@ -60,10 +60,10 @@ class SosStatusService extends ChangeNotifier {
     if (_storage.isDevMode()) return false;
     
     if (type == "FIRE" || type == "CRITICAL_TEMP") {
-      if (_lastFireSosTime != null && DateTime.now().difference(_lastFireSosTime!).inMinutes < 15) return true; // Cooldown
+      if (_lastFireSosTime != null && DateTime.now().difference(_lastFireSosTime!).inMinutes < 5) return true; // Cooldown
       return !_fireAiUnlocked; // Not unlocked by AI yet
     } else if (type == "GAS" || type == "GAS_LEAK") {
-      if (_lastGasSosTime != null && DateTime.now().difference(_lastGasSosTime!).inMinutes < 15) return true; // Cooldown
+      if (_lastGasSosTime != null && DateTime.now().difference(_lastGasSosTime!).inMinutes < 5) return true; // Cooldown
       return !_gasAiUnlocked; // Not unlocked by AI yet
     }
     

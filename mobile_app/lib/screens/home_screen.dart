@@ -195,11 +195,38 @@ class _HomeScreenState extends State<HomeScreen> {
   void _listenForAcks() {
     final ble = context.read<BleService>();
     final sosStatus = context.read<SosStatusService>();
+    final locale = context.read<LocaleService>();
 
-    ble.ackStream.listen((ack) async {
+    _ackSub = ble.ackStream.listen((ack) async {
       if (mounted) {
         if (ack == 0x06 || (ack is String && ack.contains("DELIVERED_TO_HQ"))) {
           await sosStatus.setStatus(SosProcessState.deliveredToHq);
+          
+          // Add a human-readable message to the HQ channel as requested by Gateway team
+          final timestamp = "${DateTime.now().hour}:${DateTime.now().minute.toString().padLeft(2, '0')}";
+          final ackMessage = locale.isEnglish 
+              ? "Your message was delivered to HQ, rescue teams are on the way." 
+              : "Mesajınız karargaha iletildi, kurtarma ekipleri yolda.";
+          
+          setState(() {
+            _incomingMessages.insert(0, "$timestamp - $ackMessage");
+          });
+
+          // Show a prominent SnackBar
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.check_circle, color: Colors.white),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(ackMessage, style: const TextStyle(fontWeight: FontWeight.bold))),
+                ],
+              ),
+              backgroundColor: const Color(0xFF2E7D32),
+              duration: const Duration(seconds: 5),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
         } else if (ack is String && ack.contains("SENT_TO_NODE")) {
           await sosStatus.setStatus(SosProcessState.sentToNode);
         }
@@ -433,6 +460,9 @@ class _HomeScreenState extends State<HomeScreen> {
     
     Timer? switchTimer;
 
+    // Alarm gelir gelmez SOS kilidini aç ve 15 dk sonra otomatik kapanması için sayacı başlat
+    sosStatus.triggerAiEmergency(type: type);
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -460,12 +490,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 switchTimer?.cancel();
                 whistle.stopWhistle(); 
                 ble.sendSilenceCommand(); 
-                setState(() { 
-                  _isFireActive = false; 
-                  _isGasActive = false; 
-                  _activeSosType = ""; 
-                });
                 Navigator.pop(context); 
+                
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(locale.isEnglish ? "Silenced. Danger UI remains active for 1 minute." : "Susturuldu. Tehlike ekranı 1 dakika daha aktif kalacak."),
+                    backgroundColor: const Color(0xFFFF9800),
+                  )
+                );
+                
+                Timer(const Duration(minutes: 1), () {
+                  if (mounted) {
+                    setState(() { 
+                      _isFireActive = false; 
+                      _isGasActive = false; 
+                      _activeSosType = ""; 
+                    });
+                  }
+                });
               }, 
               child: Text(
                 locale.isEnglish ? "SILENCE (I'm Conscious)" : "SUSTUR (Bilincim Açık)",
@@ -481,7 +523,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         Navigator.pop(context); 
         gps.forceEmergencyWake();
-        sosStatus.triggerAiEmergency();
         _sendSos(type: type);
       }
     });
@@ -497,7 +538,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() { _activeSosType = type; });
 
     // 1. Anti-Spam: Aynı mesajsa sessizce çık (GPS uyarısı gösterme)
-    if (!storage.isDevMode() && storage.getLastSosTimestamp() != null && !fromQueue) {
+    if (type == "EARTHQUAKE" && !storage.isDevMode() && storage.getLastSosTimestamp() != null && !fromQueue) {
       if (!sosStatus.hasPayloadChanged(_healthStatusKey, _personCount)) {
         return; 
       }
@@ -518,7 +559,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // 3. Gönderim Durumunu Başlat (Bu aşamadan sonra buton kilitlenir)
     gps.forceEmergencyWake();
-    sosStatus.startSending();
+    sosStatus.startSending(type: type);
 
     final country = storage.getCountry();
     final forced = storage.getForceSosLang();
@@ -570,12 +611,19 @@ class _HomeScreenState extends State<HomeScreen> {
         byteData.setFloat32(6, 0.0, Endian.little);
       }
       
-      // 10-11. Bytes: Sağlık ve Kişi Sayısı (HER DURUMDA GÖNDERİLMELİ)
+      // 10-11. Bytes: Sağlık ve Kişi Sayısı
       int healthValue = 0;
-      if (_healthStatusKey == "Lightly Injured") healthValue = 1;
-      if (_healthStatusKey == "Severely Injured") healthValue = 2;
+      int personCountValue = 1;
+      
+      // Sadece Deprem durumunda kullanıcının girdiği detaylı veriyi kullan
+      if (type == "EARTHQUAKE") {
+        if (_healthStatusKey == "Lightly Injured") healthValue = 1;
+        if (_healthStatusKey == "Severely Injured") healthValue = 2;
+        personCountValue = _personCount;
+      }
+      
       byteData.setUint8(10, healthValue);
-      byteData.setUint8(11, _personCount);
+      byteData.setUint8(11, personCountValue);
       
       payload = byteData.buffer.asUint8List();
     }
