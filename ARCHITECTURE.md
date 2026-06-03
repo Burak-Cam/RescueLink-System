@@ -16,17 +16,17 @@ RescueLink üç katmanlı bir sistemdir. Her katman tek başına ayakta kalabili
    [ Afetzede ]
         │  BLE (UART servisi)
         ▼
- ┌──────────────────┐        LoRa (16-byte ikili paket)       ┌──────────────────┐
- │   Edge Node      │  ───────────────────────────────────►   │     Gateway      │
- │   (ESP32)        │   ◄───────  ACK / HQ mesajları  ───────  │ (Raspberry Pi)   │
- │  Sensör + AI     │                                          │  Flask + SQLite  │
+ ┌──────────────────┐        LoRa (16-byte ikili paket)        ┌──────────────────┐
+ │   Mobil Uygulama │       ──────────────────────────────────►│     Gateway      │
+ │   (Flutter)      │   ◄───────  ACK / HQ mesajları  ───────  │ (Raspberry Pi)   │
+ │  GPS / konum / UI│                                          │  Flask + SQLite  │
  └──────────────────┘                                          └────────┬─────────┘
         ▲                                                               │ Socket.IO
         │ BLE                                                           ▼
  ┌──────────────────┐                                          ┌──────────────────┐
- │  Mobil Uygulama  │                                          │  Karargâh Haritası│
- │   (Flutter)      │                                          │   (Web arayüzü)  │
- │ GPS / konum / UI │                                          └──────────────────┘
+ │  Edge Node       │                                          │ Karargâh Haritası│
+ │   (ESP32)        │                                          │   (Web arayüzü)  │
+ │ Mobil Uygulama   │                                          └──────────────────┘
  └──────────────────┘
 ```
 
