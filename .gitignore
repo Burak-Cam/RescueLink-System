@@ -1,0 +1,18 @@
+# --- Gizli anahtarlar / kimlik bilgileri ---
+# Gerçek anahtarlar burada; repoya yalnızca secrets.example.h girer.
+secrets.h
+rescuelink_combined/secrets.h
+**/secrets.h
+
+# --- Editör / araç klasörleri ---
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Derleme çıktıları ---
+*.bin
+*.elf
+build/

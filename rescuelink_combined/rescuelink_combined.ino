@@ -17,9 +17,12 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>    // [YENİ] GitHub API JSON parse
 #include <Update.h>         // [YENİ] OTA flash
+#include "secrets.h"        // Gizli anahtarlar (repoya dahil değil — secrets.example.h'a bakın)
 
-// [YENİ] Edge Impulse API — anahtarınızı buraya yazın
-#define EI_API_KEY "ei_ce12f316ea0303e0a6bcedf05f26bf2bac373a6749b75e8a"
+// Edge Impulse API anahtarı artık secrets.h içinde tanımlı (EI_API_KEY).
+#ifndef EI_API_KEY
+#error "EI_API_KEY tanimli degil. secrets.example.h dosyasini secrets.h olarak kopyalayip anahtarinizi girin."
+#endif
 
 // [YENİ] Cloud OTA — GitHub üzerinden otomatik güncelleme
 #define FIRMWARE_VERSION  "v0.9"
