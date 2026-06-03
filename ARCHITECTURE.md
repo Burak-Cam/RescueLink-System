@@ -13,21 +13,28 @@ RescueLink üç katmanlı bir sistemdir. Her katman tek başına ayakta kalabili
 üst katman erişilemese bile kendi sorumluluğunu otonom olarak sürdürür.
 
 ```
-   [ Afetzede ]
-        │  BLE 
-        ▼
- ┌──────────────────┐        LoRa (16-byte ikili paket)        ┌──────────────────┐
- │   Mobil Uygulama │       ──────────────────────────────────►│     Gateway      │
- │   (Flutter)      │   ◄───────  ACK / HQ mesajları  ───────  │ (Raspberry Pi)   │
- │  GPS / konum / UI│                                          │  Flask + SQLite  │
- └──────────────────┘                                          └────────┬─────────┘
-        ▲                                                               │ Socket.IO
-        │ BLE (UART servisi)                                            ▼
- ┌──────────────────┐                                          ┌──────────────────┐
- │  Edge Node       │                                          │ Karargâh Haritası│
- │   (ESP32)        │                                          │   (Web arayüzü)  │
- │ Mobil Uygulama   │                                          └──────────────────┘
- └──────────────────┘
+[ Afetzede ]
+            │  
+            ▼  Kullanıcı Arayüzü / Çevrimdışı Kuyruk
+  ┌──────────────────┐
+  │  Mobil Uygulama  │
+  │    (Flutter)     │
+  │ GPS / Konum / UI │
+  └──────────────────┘
+            │ ▲ 
+ BLE (GATT) │ │ ACK Bildirimi
+            ▼ │
+  ┌──────────────────┐       LoRa (16-byte ikili paket)       ┌──────────────────┐
+  │    Edge Node     │───────────────────────────────────────►│     Gateway      │
+  │   (ESP32-S3)     │                                        │ (Raspberry Pi 5) │
+  │  AI / Sensörler  │◄──────── 0x06 ACK Downlink ────────────│  Flask + SQLite  │
+  └──────────────────┘                                        └────────┬─────────┘
+                                                                       │ Socket.IO
+                                                                       ▼
+                                                              ┌──────────────────┐
+                                                              │ Karargâh Haritası│
+                                                              │  (Web Dashboard) │
+                                                              └──────────────────┘
 ```
 
 | Katman | Donanım | Yazılım | Sorumluluk |
