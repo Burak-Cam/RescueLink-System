@@ -121,7 +121,6 @@ flutter run
 
 | Katkı | Kişi |
 |-------|------|
-| Sistem tasarımı & mimari | Semi Kağan Şahin |
 | Gateway (Raspberry Pi / backend) | Cem Albal |
 | Mobil uygulama (Flutter) | Burak Çam |
 | Yapay zeka (Edge Impulse modelleri) | Kerem Arkaç |
